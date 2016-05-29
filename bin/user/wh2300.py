@@ -223,37 +223,6 @@ class WH2300Station(object):
             logdbg("timeout while reading: ignoring bytes: %s" % _fmt(rbuf))
             raise BadRead("Timeout after %d bytes" % len(rbuf))
 
-        # Send acknowledgement whether or not it was a good read
-        reqbuf = [0x24, 0xAF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-        reqbuf[4] = addr / 0x10000
-        reqbuf[3] = (addr - (reqbuf[4] * 0x10000)) / 0x100
-        reqbuf[2] = addr - (reqbuf[4] * 0x10000) - (reqbuf[3] * 0x100)
-        reqbuf[5] = (reqbuf[1] ^ reqbuf[2] ^ reqbuf[3] ^ reqbuf[4])
-        ret = self.devh.controlMsg(requestType=0x21,
-                                   request=usb.REQ_SET_CONFIGURATION,
-                                   value=0x0200,
-                                   index=0x0000,
-                                   buffer=reqbuf,
-                                   timeout=self.TIMEOUT)
-
-        # now check what we got
-        if len(rbuf) < 34:
-            raise BadRead("Not enough bytes: %d < 34" % len(rbuf))
-        # there must be a header byte...
-        if rbuf[0] != 0x5a:
-            raise BadHeader("Bad header byte: %02x != %02x" % (rbuf[0], 0x5a))
-        # ...and the last byte must be a valid crc
-        crc = 0x00
-        for x in rbuf[:33]:
-            crc = crc ^ x
-        if crc != rbuf[33]:
-            raise BadRead("Bad crc: %02x != %02x" % (crc, rbuf[33]))
-
-        # early versions of this driver used to get long reads, but these
-        # might not happen any more. log it then try to use the data anyway.
-        if len(rbuf) != 34:
-            loginf("read: wrong number of bytes: %d != 34" % len(rbuf))
-
         return rbuf
 
     def get_data(self, addr, length):
