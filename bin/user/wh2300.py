@@ -9,6 +9,8 @@ serial number FOS-ENG-022-A for model WH2300, and "TP2700 PC Protocol".
 The station has 3552 records.  Each record is 18 bytes.  The timestamp for each
 record is stored separately from the record.
 
+Memory Map
+
 0x0000 to 0x0258 : system, max/min, alarms, etc
 
 0x0259 to 0x02c7 : 110 bytes : page flag structure
@@ -27,6 +29,123 @@ each 8-byte segment is a timestamp
 
 0x0640 to 0xffff : records
 each record is 18 bytes
+
+Decoding
+
+Temperature is value + 40C
+Temperature, pressure, wind speed, rainfall, light are value / 10.0
+Data are stored as hi byte first then lo byte
+For 1 byte word, 0xff indicates invalid
+For 2 byte word, 0xffff indicates invalid
+For 4 byte word, 0xffffffff indicates invalid
+
+Commands
+
+TIME_SYNC         0x01
+READ_EEPROM       0x02
+WRITE_EEPROM      0x03
+READ_RECORD       0x04
+READ_MAX          0x05
+READ_MIN          0x06
+READ_MAX_DAY      0x07
+READ_MIN_DAY      0x08
+CLEAR_MAX_MIN_DAY 0x09
+PARAM_CHANGED     0x0a
+CLEAR_HISTORY     0x0b
+READ_PARAM        0x0c
+
+CMD_RESULT        0xf0
+
+The checksum in each message is simply the lo byte of the sum of the bytes in
+each message.
+
+Time Sync (9 bytes)
+
+  TIME_SYNC    1
+  year         1 0x00-0x99 -> 2000 -> 2099
+  month        1
+  day          1
+  hour         1
+  minute       1
+  second       1
+  1/125 second 1 0x00-0x07
+  checksum     1
+
+Read EEPROM (5 bytes)
+
+  READ_EEPROM  1
+  address      2 lo hi
+  size         1 1-56
+  checksum     1
+
+  READ_EEPROM  1
+  size         1 1-56
+  data         x
+  checksum     1
+
+Write EEPROM (x bytes)
+
+  WRITE_EEPROM 1
+  address      2 lo hi
+  size         1 1-12
+  data         x
+  checksum     1
+
+Read Record (2 bytes)
+
+  READ_RECORD  1 read the current value
+  checksum     1
+
+  READ_RECORD  1
+  size         1
+  data         x
+  checksum     1
+
+Param Changed (4 bytes)
+
+  PARAM_CHANGED 1
+  parameter     2
+  checksum      1
+
+  parameter values:
+    0x0001 alarm tag or value changed
+    0x0002 latitude/longitude/timezone changed
+    0x0004 parameters have changed
+    0x0008 max/min value has changed
+    0x0010 history has been emptied
+
+Read Parameter (2 bytes)
+
+  READ_PARAM 1
+  checksum   1
+
+  READ_PARAM 1
+  size       1
+  data       1
+  checksum   1
+
+  data values:
+    bit 0: 01: UART 10: ASK 00: FSK
+    bit 1: 01: UART function 10: ASK function 00: FSK function
+    bit 2: 1: RCC 0: no RCC
+
+Command Result
+
+  CMD_RESULT 1
+  CMD        1
+  result     2
+  checksum   1
+
+  return values:
+    1 RT_SUCCESS
+    2 RT_INVALID_USER_PASS
+    3 RT_INVALID_ID
+    4 RT_INVALID_CRC
+    5 RT_BUSY
+    6 RT_TOO_SIZE
+    7 RT_ERROR
+    8 RT_UNKNOWN_CMD
+    9 RT_INVALID_PARAM
 """
 
 from __future__ import with_statement
@@ -116,9 +235,9 @@ class WH2300Driver(weewx.drivers.AbstractDevice):
         pkg['pressure'] = data.get('pressure')
         pkg['light'] = data.get('light')
         pkg['UV'] = data.get('uv')
-        pkt['rain'] = calculate_rain(data['rain_total'], self.last_rain)
-        pkt['rxCheckPercent'] = (1 - pkt['no_sensors']) * 100
-        self.last_rain = data['rain_total']
+        pkt['rain'] = calculate_rain(data.get('rain_total'), self.last_rain)
+        pkt['rxCheckPercent'] = (1 - data.get('no_sensors', 1)) * 100
+        self.last_rain = data.get('rain_total')
         return pkt
 
 
@@ -130,6 +249,7 @@ class WH2300Station(object):
         self.iface = interface
         self.max_tries = max_tries
         self.retry_wait = retry_wait
+        self.timeout = 1200
         self.devh = None
 
     def __enter__(self):
@@ -166,6 +286,14 @@ class WH2300Station(object):
             logcrt("Unable to claim USB interface %s: %s" % (self.iface, e))
             raise weewx.WeeWxIOError(e)
 
+        # clear any random data on the bus
+        for i in range(4):
+            try:
+                self.devh.interruptRead(0x81, 8, self.timeout)
+            except usb.USBError, e:
+                logdbg("error while flushing: %s" % e)
+                break
+
     def close(self):
         if self.devh:
             try:
@@ -185,49 +313,15 @@ class WH2300Station(object):
                     return dev
         return None
 
-    def _raw_read(self, addr):
-        reqbuf = [0x05, 0xAF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]
-        reqbuf[4] = addr / 0x10000
-        reqbuf[3] = (addr - (reqbuf[4] * 0x10000)) / 0x100
-        reqbuf[2] = addr - (reqbuf[4] * 0x10000) - (reqbuf[3] * 0x100)
-        reqbuf[5] = (reqbuf[1] ^ reqbuf[2] ^ reqbuf[3] ^ reqbuf[4])
-        ret = self.devh.controlMsg(requestType=0x21,
-                                   request=usb.REQ_SET_CONFIGURATION,
-                                   value=0x0200,
-                                   index=0x0000,
-                                   buffer=reqbuf,
-                                   timeout=self.TIMEOUT)
-        if ret != 8:
-            raise BadRead('Unexpected response to data request: %s != 8' % ret)
-
-        time.sleep(0.1)  # te923tool is 0.3
-        start_ts = time.time()
-        rbuf = []
-        while time.time() - start_ts < 3:
-            try:
-                buf = self.devh.interruptRead(
-                    self.ENDPOINT_IN, self.READ_LENGTH, self.TIMEOUT)
-                if buf:
-                    nbytes = buf[0]
-                    if nbytes > 7 or nbytes > len(buf) - 1:
-                        raise BadRead("Bogus length during read: %d" % nbytes)
-                    rbuf.extend(buf[1:1 + nbytes])
-                if len(rbuf) >= 34:
-                    break
-            except usb.USBError, e:
-                errmsg = repr(e)
-                if not ('No data available' in errmsg or 'No error' in errmsg):
-                    raise weewx.WeeWxIOError(e)
-            time.sleep(0.009) # te923tool is 0.15
-        else:
-            logdbg("timeout while reading: ignoring bytes: %s" % _fmt(rbuf))
-            raise BadRead("Timeout after %d bytes" % len(rbuf))
-
-        return rbuf
+    def _raw_read(self, addr, length):
+        result = self.devh.interruptRead(0x81, addr, timeout)
+        if result is None or len(result) < size:
+            raise IOError('raw_read failed')
+        return list(result)
 
     def get_data(self, addr, length):
         logdbg("get %s bytes from address 0x%06x" % (length, addr))
-        buf = self.raw_read(addr)
+        buf = self.raw_read(addr, length)
         logdbg("station said: %s" % ' '.join(["%0.2X" % ord(c) for c in buf]))
         return buf
 
