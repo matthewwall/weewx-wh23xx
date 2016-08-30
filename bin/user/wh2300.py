@@ -242,6 +242,12 @@ class WH2300Driver(weewx.drivers.AbstractDevice):
 
 
 class WH2300Station(object):
+    USB_ENDPOINT = 0x81
+    USB_HID_GET_REPORT = 0x01
+    USB_HID_SET_REPORT = 0x09
+    USB_HID_INPUT_REPORT = 0x100
+    USB_HID_OUTPUT_REPORT = 0x200
+
     def __init__(self, vendor_id=0x10c4, product_id=0x8468, interface=0,
                  max_tries=10, retry_wait=5):
         self.vendor_id = vendor_id
@@ -249,7 +255,7 @@ class WH2300Station(object):
         self.iface = interface
         self.max_tries = max_tries
         self.retry_wait = retry_wait
-        self.timeout = 1200
+        self.timeout = 1000
         self.devh = None
 
     def __enter__(self):
@@ -269,7 +275,7 @@ class WH2300Station(object):
         if not self.devh:
             raise weewx.WeeWxIOError('Open USB device failed')
 
-        self.devh.reset()
+#        self.devh.reset()
 
         # be sure kernel does not claim the interface on linux systems
         try:
@@ -289,7 +295,7 @@ class WH2300Station(object):
         # clear any random data on the bus
         for i in range(4):
             try:
-                self.devh.interruptRead(0x81, 8, self.timeout)
+                self._flush()
             except usb.USBError, e:
                 logdbg("error while flushing: %s" % e)
                 break
@@ -313,15 +319,67 @@ class WH2300Station(object):
                     return dev
         return None
 
-    def _raw_read(self, addr, length):
-        result = self.devh.interruptRead(0x81, addr, timeout)
+    def _flush(self):
+        result = self.devh.controlMsg(
+            requestType=usb.TYPE_CLASS + usb.RECIP_INTERFACE,
+            request=self.USB_HID_SET_REPORT,
+            buffer=[0x20,0x00,0x08,0x01,0x00,0x00,0x00,0x00],
+            value=self.USB_HID_OUTPUT_REPORT,
+            index=0x0,
+            timeout=self.timeout)
+
+    def _raw_read(self, addr, size):
+        addr1 = (addr / 256) & 0xff
+        addr2 = addr & 0xff
+
+#        result = self.devh.controlMsg(
+#            requestType=0x82,
+#            request=self.USB_HID_SET_REPORT,
+#            buffer=size,
+#            value=self.USB_HID_OUTPUT_REPORT,
+#            index=0x0,
+#            timeout=self.timeout)
+
+#        result = self.devh.controlMsg(
+#            requestType=0x21,
+#            request=self.USB_HID_SET_REPORT,
+#            buffer=[],
+#            value=usb.REQ_SET_CONFIGURATION,
+#            index=0x0,
+#            timeout=self.timeout)
+
+#        result = self.devh.controlMsg(
+#            requestType=usb.TYPE_CLASS + usb.RECIP_INTERFACE + usb.ENDPOINT_IN,
+#            request=self.USB_HID_SET_REPORT,
+#            buffer=size,
+#            value=self.USB_HID_OUTPUT_REPORT,
+#            index=0x0,
+#            timeout=self.timeout)
+
+        result = self.devh.controlMsg(
+            requestType=usb.TYPE_CLASS + usb.RECIP_INTERFACE,
+            request=self.USB_HID_SET_REPORT,
+            buffer=[0x20,0x00,addr1,addr2,0x00,0x00,0x00,0x00],
+            value=self.USB_HID_OUTPUT_REPORT,
+            index=0x0,
+            timeout=self.timeout)
+
+#        result = self.devh.interruptRead(self.USB_ENDPOINT, size, self.timeout)
+
+#        result = self.devh.interruptRead(0x82, size, self.timeout)
+
+        result = self.devh.interruptRead(0x82, 64, self.timeout)
+
+#        result = self.devh.interruptRead(0x82, 8, self.timeout)
+
+        logdbg("result: %s" % result)
         if result is None or len(result) < size:
             raise IOError('raw_read failed')
         return list(result)
 
     def get_data(self, addr, length):
         logdbg("get %s bytes from address 0x%06x" % (length, addr))
-        buf = self.raw_read(addr, length)
+        buf = self._raw_read(addr, length)
         logdbg("station said: %s" % ' '.join(["%0.2X" % ord(c) for c in buf]))
         return buf
 
@@ -357,7 +415,7 @@ class WH2300Station(object):
         raise NotImplementedError("clear_history is not implemented")
 
     def get_station_info(self):
-        buf = self.get_data_with_retry(0x0000, 0x0201)
+        buf = self.get_data_with_retry(0x0000, 0x023)
         data = dict()
         data['eeprom'] = "0x%02x 0x%02x" % (buf[0], buf[1])
         data['model'] = "0x%02x 0x%02x" % (buf[2], buf[3])
