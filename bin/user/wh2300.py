@@ -1,5 +1,8 @@
 #!/usr/bin/env python
 # Copyright 2016 Matthew Wall, all rights reserved
+#
+# Thanks to Lloyd Kinsella
+
 """
 Collect data from Fine Offset WH2300 stations.
 
@@ -179,6 +182,12 @@ def logerr(msg):
     logmsg(syslog.LOG_ERR, msg)
 
 
+def _fmt(buf):
+    if buf:
+        return ' '.join(["%02x" % x for x in buf])
+    return ''
+
+
 class WH2300ConfigurationEditor(weewx.drivers.AbstractConfEditor):
     @property
     def default_stanza(self):
@@ -242,11 +251,52 @@ class WH2300Driver(weewx.drivers.AbstractDevice):
 
 
 class WH2300Station(object):
-    USB_ENDPOINT = 0x81
+    # these are generic HID values
     USB_HID_GET_REPORT = 0x01
     USB_HID_SET_REPORT = 0x09
     USB_HID_INPUT_REPORT = 0x100
     USB_HID_OUTPUT_REPORT = 0x200
+
+    # from lsusb -v we find these values
+    USB_ENDPOINT_IN = 0x82
+    USB_ENDPOINT_OUT = 0x02
+    USB_PACKET_SIZE = 0x40 # 64 bytes
+
+    # from the vendor documentation we have values for these parameters
+    TIME_SYNC = 0x01
+    READ_EEPROM = 0x02
+    WRITE_EEPROM = 0x03
+    READ_RECORD = 0x04
+    READ_MAX = 0x05
+    READ_MIN = 0x06
+    READ_MAX_DAY = 0x07
+    READ_MIN_DAY = 0x08
+    CLEAR_MAX_MIN_DAY = 0x09
+    PARAM_CHANGED = 0x0a
+    CLEAR_HISTORY = 0x0b
+    READ_PARAM = 0x0c
+
+    CMD_RESULT = 0xf0
+
+    PARAM_ITEM_ALARM = 0x0001
+    PARAM_ITEM_TIMEZONE = 0x0002
+    PARAM_ITEM_PARAM = 0x0004
+    PARAM_ITEM_MAX_MIN = 0x0008
+    PARAM_ITEM_HISTORY = 0x0010
+
+    RT_SUCCESS = 0x0000
+    RT_INVALID_USER_PASS = 0x0001
+    RT_INVALID_ID = 0x0002
+    RT_INVALID_CRC = 0x0004
+    RT_BUSY = 0x0008
+    RT_TOO_SIZE = 0x0010
+    RT_ERROR = 0x0020
+    RT_UNKNOWN_CMD = 0x0040
+    RT_INVALID_PARAM = 0x0080
+
+    INVALID_DATA_8 = 0xff
+    INVALID_DATA_16 = 0xffff
+    INVALID_DATA_32 = 0xffffffff
 
     def __init__(self, vendor_id=0x10c4, product_id=0x8468, interface=0,
                  max_tries=10, retry_wait=5):
@@ -268,7 +318,7 @@ class WH2300Station(object):
     def open(self):
         dev = self._find_dev(self.vendor_id, self.product_id)
         if not dev:
-            logcrt("Cannot find USB device with VendorID=0x%04x ProductID=0x%04x" % (self.vendor_id, self.product_id))
+            logerr("Cannot find USB device with VendorID=0x%04x ProductID=0x%04x" % (self.vendor_id, self.product_id))
             raise weewx.WeeWxIOError('Unable to find station on USB')
 
         self.devh = dev.open()
@@ -289,16 +339,8 @@ class WH2300Station(object):
             self.devh.setAltInterface(self.iface)
         except usb.USBError, e:
             self.close()
-            logcrt("Unable to claim USB interface %s: %s" % (self.iface, e))
+            logerr("Unable to claim USB interface %s: %s" % (self.iface, e))
             raise weewx.WeeWxIOError(e)
-
-        # clear any random data on the bus
-        for i in range(4):
-            try:
-                self._flush()
-            except usb.USBError, e:
-                logdbg("error while flushing: %s" % e)
-                break
 
     def close(self):
         if self.devh:
@@ -318,15 +360,6 @@ class WH2300Station(object):
                            (bus.dirname, dev.filename))
                     return dev
         return None
-
-    def _flush(self):
-        result = self.devh.controlMsg(
-            requestType=usb.TYPE_CLASS + usb.RECIP_INTERFACE,
-            request=self.USB_HID_SET_REPORT,
-            buffer=[0x20,0x00,0x08,0x01,0x00,0x00,0x00,0x00],
-            value=self.USB_HID_OUTPUT_REPORT,
-            index=0x0,
-            timeout=self.timeout)
 
     def _raw_read(self, addr, size):
         addr1 = (addr / 256) & 0xff
@@ -359,7 +392,7 @@ class WH2300Station(object):
         result = self.devh.controlMsg(
             requestType=usb.TYPE_CLASS + usb.RECIP_INTERFACE,
             request=self.USB_HID_SET_REPORT,
-            buffer=[0x20,0x00,addr1,addr2,0x00,0x00,0x00,0x00],
+            buffer=[0x20,0x20,addr1,addr2,0x00,0x00,0x00,0x00],
             value=self.USB_HID_OUTPUT_REPORT,
             index=0x0,
             timeout=self.timeout)
@@ -399,8 +432,32 @@ class WH2300Station(object):
 
     def get_current(self):
         # equivalent of the READ_RECORD operation
-        # FIXME: calculate address for next read
-        return self.get_data_with_retry(addr)
+        result = self.devh.controlMsg(
+#            requestType=usb.TYPE_CLASS + usb.RECIP_INTERFACE,
+#            request=self.USB_HID_SET_REPORT,
+            requestType=0x21,
+            request=usb.REQ_SET_CONFIGURATION,
+            buffer=[0x20,
+                    0x20,
+                    WH2300Station.READ_RECORD,
+                    WH2300Station.READ_RECORD],
+            value=self.USB_HID_OUTPUT_REPORT,
+            index=0x0,
+            timeout=self.timeout)
+        if not result or result < 4:
+            raise IOError('READ_RECORD failed: controlMsg failure')
+        buf = self.devh.interruptRead(
+            self.USB_ENDPOINT_IN,
+            self.USB_PACKET_SIZE,
+            self.timeout)
+        logdbg("buf: %s" % _fmt(buf))
+        if not buf:
+            raise IOError('READ_RECORD failed: empty buf')
+        rbuf = []
+        if buf[0] == 0x01:
+            rbuf = buf[2:]
+        logdbg("rbuf: %s" % _fmt(rbuf))
+        return rbuf
 
     def set_time(self):
         # FIXME: implement set_time
