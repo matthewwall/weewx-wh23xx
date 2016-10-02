@@ -182,10 +182,33 @@ def logerr(msg):
     logmsg(syslog.LOG_ERR, msg)
 
 
+#' '.join(["%0.2X" % ord(c) for c in buf]))
 def _fmt(buf):
     if buf:
         return ' '.join(["%02x" % x for x in buf])
     return ''
+
+def _calc_checksum(a):
+    s = 0
+    for x in a:
+        s += x
+    return s & 0xff
+
+def _get_bit(x, bit):
+    return 1 if ((x & (1 << bit)) == (1 << bit)) else 0
+
+def _decode_bytes(buf, idx, nbytes, func):
+    # if all bytes are 0xff, the value is not valid...
+    for j in range(nbytes):
+        if buf[idx] != 0xff:
+            break
+    else:
+        return None
+    # ...otherwise, calculate a value from the bytes, MSB first
+    x = 0
+    for j in range(nbytes):
+        x += buf[idx + j] << ((nbytes - j - 1) * 8)
+    return func(x)
 
 
 class WH2300ConfigurationEditor(weewx.drivers.AbstractConfEditor):
@@ -226,7 +249,7 @@ class WH2300Driver(weewx.drivers.AbstractDevice):
             raw = self._station.get_current()
             if raw:
                 logdbg("raw data: %s" % raw)
-                parsed = WH2300Station.parse_raw(raw)
+                parsed = WH2300Station.decode_weather_data(raw)
                 logdbg("parsed data: %s" % parsed)
                 packet = self._data_to_packet(parsed)
                 yield packet
@@ -298,6 +321,33 @@ class WH2300Station(object):
     INVALID_DATA_16 = 0xffff
     INVALID_DATA_32 = 0xffffffff
 
+    ITEM_INTEMP = 0x01 # C
+    ITEM_OUTTEMP = 0x02 # C
+    ITEM_DEWPOINT = 0x03 # C
+    ITEM_WINDCHILL = 0x04 # C
+    ITEM_HEATINDEX = 0x05 # C
+    ITEM_INHUMI = 0x06 # %
+    ITEM_OUTHUMI = 0x07 # %
+    ITEM_ABSBARO = 0x08 # mbar
+    ITEM_RELBARO = 0x09 # mbar
+    ITEM_WINDDIRECTION = 0x0a # degree
+    ITEM_WINDSPEED = 0x0b # m/s
+    ITEM_GUSTSPEED = 0x0c # m/s
+    ITEM_RAINEVENT = 0x0d # mm
+    ITEM_RAINRATE = 0x0e # mm/h
+    ITEM_RAINHOUR = 0x0f # mm
+    ITEM_RAINDAY = 0x10 # mm
+    ITEM_RAINWEEK = 0x11 # mm
+    ITEM_RAINMONTH = 0x12 # mm
+    ITEM_RAINYEAR = 0x13 # mm
+    ITEM_RAINTOTALS = 0x14 # mm
+    ITEM_LIGHT = 0x15 # lux
+    ITEM_UV = 0x16 # uW/m^2
+    ITEM_UVI = 0x17 # 0-15 index
+
+    ITEM_TIME = 0x40
+    ITEM_DATE = 0x80
+
     def __init__(self, vendor_id=0x10c4, product_id=0x8468, interface=0,
                  max_tries=10, retry_wait=5):
         self.vendor_id = vendor_id
@@ -333,6 +383,13 @@ class WH2300Station(object):
         except (AttributeError, usb.USBError):
             pass
 
+        # this works to unwedge the device, and seems to not cause problems.
+        # specific cases include when you do an interrupt write with bogus
+        # data.  use a reset to bring the station back to responsiveness.
+        # unfortunately it is not immediate.  sometimes it takes one reset.
+        # sometimes it takes two resets.
+        self.devh.reset()
+
         # attempt to claim the interface
         try:
             self.devh.claimInterface(self.iface)
@@ -361,59 +418,9 @@ class WH2300Station(object):
                     return dev
         return None
 
-    def _raw_read(self, addr, size):
-        addr1 = (addr / 256) & 0xff
-        addr2 = addr & 0xff
-
-#        result = self.devh.controlMsg(
-#            requestType=0x82,
-#            request=self.USB_HID_SET_REPORT,
-#            buffer=size,
-#            value=self.USB_HID_OUTPUT_REPORT,
-#            index=0x0,
-#            timeout=self.timeout)
-
-#        result = self.devh.controlMsg(
-#            requestType=0x21,
-#            request=self.USB_HID_SET_REPORT,
-#            buffer=[],
-#            value=usb.REQ_SET_CONFIGURATION,
-#            index=0x0,
-#            timeout=self.timeout)
-
-#        result = self.devh.controlMsg(
-#            requestType=usb.TYPE_CLASS + usb.RECIP_INTERFACE + usb.ENDPOINT_IN,
-#            request=self.USB_HID_SET_REPORT,
-#            buffer=size,
-#            value=self.USB_HID_OUTPUT_REPORT,
-#            index=0x0,
-#            timeout=self.timeout)
-
-        result = self.devh.controlMsg(
-            requestType=usb.TYPE_CLASS + usb.RECIP_INTERFACE,
-            request=self.USB_HID_SET_REPORT,
-            buffer=[0x20,0x20,addr1,addr2,0x00,0x00,0x00,0x00],
-            value=self.USB_HID_OUTPUT_REPORT,
-            index=0x0,
-            timeout=self.timeout)
-
-#        result = self.devh.interruptRead(self.USB_ENDPOINT, size, self.timeout)
-
-#        result = self.devh.interruptRead(0x82, size, self.timeout)
-
-        result = self.devh.interruptRead(0x82, 64, self.timeout)
-
-#        result = self.devh.interruptRead(0x82, 8, self.timeout)
-
-        logdbg("result: %s" % result)
-        if result is None or len(result) < size:
-            raise IOError('raw_read failed')
-        return list(result)
-
     def get_data(self, addr, length):
         logdbg("get %s bytes from address 0x%06x" % (length, addr))
         buf = self._raw_read(addr, length)
-        logdbg("station said: %s" % ' '.join(["%0.2X" % ord(c) for c in buf]))
         return buf
 
     def get_data_with_retry(self, addr, length=32):
@@ -430,34 +437,86 @@ class WH2300Station(object):
             logerr(msg)
             raise weewx.RetriesExceeded(msg)
 
-    def get_current(self):
-        # equivalent of the READ_RECORD operation
-        result = self.devh.controlMsg(
-#            requestType=usb.TYPE_CLASS + usb.RECIP_INTERFACE,
-#            request=self.USB_HID_SET_REPORT,
-            requestType=0x21,
-            request=usb.REQ_SET_CONFIGURATION,
-            buffer=[0x20,
-                    0x20,
-                    WH2300Station.READ_RECORD,
-                    WH2300Station.READ_RECORD],
-            value=self.USB_HID_OUTPUT_REPORT,
-            index=0x0,
-            timeout=self.timeout)
-        if not result or result < 4:
-            raise IOError('READ_RECORD failed: controlMsg failure')
+    def _read_eeprom(self, addr, size):
+        addr_lo = addr & 0xff
+        addr_hi = (addr / 256) & 0xff
+        cmd = [WH2300Station.READ_EEPROM, addr_lo, addr_hi, size]
+        chksum = _calc_checksum(cmd)
+        buf = [0x02, 0x02]
+        buf.extend(cmd)
+        buf.append(chksum)
+               
+        logdbg("read_eeprom: write: %s" % _fmt(buf))
+        cnt = self.devh.interruptWrite(
+            self.USB_ENDPOINT_OUT,
+            buf,
+            self.timeout)
+        if cnt != len(buf):
+            raise weewx.WeeWxIOError('read_eeprom: bad interrupt write: '
+                                     '%s != %s' % (cnt, len(buf)))
+
+        buf = self.devh.interruptRead(
+            self.USB_ENDPOINT_IN,
+            size,
+            self.timeout)
+        if not buf:
+            raise weewx.WeeWxIOError('read_eeprom failed: bad interrupt read')
+        logdbg("read_eeprom: read: %s (%s)" % (_fmt(buf), len(buf)))
+        return buf
+
+    def _read_record(self):
+        buf = [0x02,
+               0x02,
+               WH2300Station.READ_RECORD,
+               WH2300Station.READ_RECORD]
+        cnt = self.devh.interruptWrite(
+            self.USB_ENDPOINT_OUT,
+            buf,
+            self.timeout)
+        if cnt != len(buf):
+            raise weewx.WeeWxIOError('read_record: bad interrupt write: '
+                                     '%s != %s' % (cnt, len(buf)))
+
+        tmp = []
+        record_size = 0
         buf = self.devh.interruptRead(
             self.USB_ENDPOINT_IN,
             self.USB_PACKET_SIZE,
             self.timeout)
-        logdbg("buf: %s" % _fmt(buf))
-        if not buf:
-            raise IOError('READ_RECORD failed: empty buf')
-        rbuf = []
-        if buf[0] == 0x01:
-            rbuf = buf[2:]
-        logdbg("rbuf: %s" % _fmt(rbuf))
+        if buf:
+            logdbg("read_record: buf: %s (%s)" % (_fmt(buf), len(buf)))
+            if buf[0] != 0x01:
+                raise weewx.WeeWxIOError('read_record: bad first byte: '
+                                         '0x%02x != 0x01' % buf[0])
+            if buf[2] != WH2300Station.READ_RECORD:
+                raise weewx.WeeWxIOError('read_record: missing READ_RECORD: '
+                                         '0x%02x != 0x%02x' %
+                                         (buf[2], WH2300Station.READ_RECORD))
+            logdbg("payload_size: %s" % buf[1])
+            record_size = buf[3]
+            logdbg("record_size: %s" % record_size)
+            tmp.extend(buf[4:]) # skip 0x01, payload_size, 0x04, record_size
+            while len(tmp) < record_size:
+                # FIXME: prevent infinite loop
+                buf = self.devh.interruptRead(
+                    self.USB_ENDPOINT_IN,
+                    self.USB_PACKET_SIZE,
+                    self.timeout)
+                logdbg("read_record: buf: %s (%s)" % (_fmt(buf), len(buf)))
+                logdbg("payload_size: %s" % buf[1])
+                tmp.extend(buf[2:]) # skip the first two bytes: 0x01 and size
+        rbuf = tmp[0:record_size] # prune off any dangling bytes
+
+        # verify the checksum for the record
+        tmp = [WH2300Station.READ_RECORD, record_size]
+        tmp.extend(rbuf)
+        chksum = _calc_checksum(tmp)
+        logdbg("read_record: rbuf: %s len=%s chksum=0x%02x" %
+               (_fmt(rbuf), len(rbuf), chksum))
         return rbuf
+
+    def get_current(self):
+        return self._read_record()
 
     def set_time(self):
         # FIXME: implement set_time
@@ -472,24 +531,61 @@ class WH2300Station(object):
         raise NotImplementedError("clear_history is not implemented")
 
     def get_station_info(self):
-        buf = self.get_data_with_retry(0x0000, 0x023)
+        buf = self._read_eeprom(0x0000, 56)
         data = dict()
-        data['eeprom'] = "0x%02x 0x%02x" % (buf[0], buf[1])
-        data['model'] = "0x%02x 0x%02x" % (buf[2], buf[3])
-        data['version'] = "0x%02x" % buf[4]
-        data['id'] = "0x%02x 0x%02x 0x%02x 0x%02x" % (buf[5], buf[6], buf[7], buf[8])
-        data['rain_season'] = buf[0x18] # month 1-12
-        data['lcd_contrast'] = buf[0x1b] # 0x17-0x1f
-        data['timezone'] = buf[0x1c] # -12-12
-        data['interval'] = buf[0x1a] * 256 + buf[0x19] # seconds 8-14400 (240m)
+        data['eeprom'] = "0x%02x%02x" % (buf[0], buf[1]) # 0x55aa
+        data['model'] = "0x%02x%02x" % (buf[2], buf[3]) # 0x0023
+        data['version'] = "0x%02x" % buf[4] # 0x10
+        data['id'] = "0x%02x%02x%02x%02x" % (buf[5], buf[6], buf[7], buf[8])
+        for i in range(0, 8):
+            data['factory_unit_flag_1_bit%s' % i] = _get_bit(buf[0x09], i)
+        for i in range(0, 8):
+            data['factory_unit_flag_2_bit%s' % i] = _get_bit(buf[0x0a], i)
+        for i in range(0, 8):
+            data['option_1_bit%s' % i] = _get_bit(buf[0x0b], i)
+        for i in range(0, 8):
+            data['option_2_bit%s' % i] = _get_bit(buf[0x0c], i)
+        data['mode'] = 'ASK' if (buf[0x0c] & 0xf0) == 0xf0 else 'UART'
+        data['lux_to_rad_factor'] = (buf[0x0e] * 256 + buf[0x0d]) / 10.0
+        for i in range(0, 8):
+            data['unit_setting_flag_1_bit%s' % i] = _get_bit(buf[0x10], i)
+        for i in range(0, 8):
+            data['unit_setting_flag_2_bit%s' % i] = _get_bit(buf[0x11], i)
+        for i in range(0, 8):
+            data['display_setting_flag_1_bit%s' % i] = _get_bit(buf[0x12], i)
+        for i in range(0, 8):
+            data['display_setting_flag_2_bit%s' % i] = _get_bit(buf[0x13], i)
+        for i in range(0, 8):
+            data['display_setting_flag_3_bit%s' % i] = _get_bit(buf[0x14], i)
+        for i in range(0, 8):
+            data['alarm_enable_flag_1_bit%s' % i] = _get_bit(buf[0x15], i)
+        for i in range(0, 8):
+            data['alarm_enable_flag_2_bit%s' % i] = _get_bit(buf[0x16], i)
+        for i in range(0, 8):
+            data['alarm_enable_flag_3_bit%s' % i] = _get_bit(buf[0x17], i)
+        data['rain_season'] = buf[0x18] # month 1..12
+        data['interval'] = buf[0x1a] * 256 + buf[0x19] # seconds 8..14400 (240m)
+        data['lcd_contrast'] = buf[0x1b] # 0x17..0x1f
+        data['timezone'] = buf[0x1c] # -12..12
         data['latitude'] = buf[0x1e] * 256 + buf[0x1d]
         data['longitude'] = buf[0x20] * 256 + buf[0x1f]
         data['weather'] = buf[0x21]
         data['storm'] = buf[0x22]
+        data['offset_temperature_in'] = (buf[0x24] * 256 + buf[0x23]) / 10.0
+        data['offset_humidity_in'] = buf[0x25]
+        data['offset_temperature_out'] = (buf[0x27] * 256 + buf[0x26]) / 10.0
+        data['offset_humidity_out'] = buf[0x28]
+        data['offset_pressure_abs'] = (buf[0x2a] * 256 + buf[0x29]) / 10.0
+        data['offset_pressure_rel'] = (buf[0x2c] * 256 + buf[0x2b]) / 10.0
+        data['offset_wind_dir'] = buf[0x2e] * 256 + buf[0x2d]
+        data['coefficient_wind'] = buf[0x2f]
+        data['coefficient_rain'] = buf[0x30]
+        data['coefficient_light'] = buf[0x32] * 256 + buf[0x31]
+        data['coefficient_uv'] = buf[0x34] * 256 + buf[0x33]
         return data
 
     @staticmethod
-    def parse_raw(raw):
+    def decode_history_record(raw):
         # each record is 18 bytes
         # FIXME: some of the values for invalid data do not make sense:
         #  light: 0xfff specified, using 0xffffff
@@ -500,15 +596,15 @@ class WH2300Station(object):
             logdbg("empty raw data")
             return data
         if len(raw) != 18:
-            logdbg("wrong number of bytes in raw data: %s" % len(raw))
+            logdbg("wrong number of bytes in raw data: %s != 18" % len(raw))
             return data
         x = ((raw[0] & 0x01) << 8) + raw[1]
         data['wind_dir'] = None if x == 0x1ff else x # compass degree
-        x = ((raw[0] & 0x02) / 0x02 << 8) + raw[2]
+        x = (((raw[0] & 0x02) / 0x02) << 8) + raw[2]
         data['wind_speed'] = None if x == 0x1ff else x / 10.0 # m/s
-        x = ((raw[0] & 0x04) / 0x04 << 8) + raw[3]
+        x = (((raw[0] & 0x04) / 0x04) << 8) + raw[3]
         data['gust_speed'] = None if x == 0x1ff else x / 10.0 # m/s
-        data['rain_total'] = (((raw[0] & 0x08) / 0x08 << 16) + (raw[5] << 8) + raw[4]) * 0.1 # 0.0-9999.9 mm
+        data['rain_total'] = ((((raw[0] & 0x08) / 0x08) << 16) + (raw[5] << 8) + raw[4]) * 0.1 # 0.0-9999.9 mm
         data['rain_overflow'] = (raw[0] & 0x10) / 0x10 # bit 4
         data['no_sensors'] = (raw[0] & 0x80) / 0x80 # bit 7
         data['humidity_in'] = None if raw[6] == 0xff else raw[6]
@@ -525,6 +621,78 @@ class WH2300Station(object):
         data['uv'] = None if x == 0xffff else x # 0-20000 uW/m^2
         return data
 
+    # this map associates the item identifier with [label, num_bytes, function]
+    # required for decoding from raw bytes.
+    ITEM_MAPPING = {
+        ITEM_INTEMP: ['in_temp', 2, lambda x : x / 10.0 - 40.0],
+        ITEM_OUTTEMP: ['out_temp', 2, lambda x : x / 10.0 - 40.0],
+        ITEM_DEWPOINT: ['dewpoint', 2, lambda x : x / 10.0 - 40.0],
+        ITEM_WINDCHILL: ['windchill', 2, lambda x : x / 10.0 - 40.0],
+        ITEM_HEATINDEX: ['heatindex', 2, lambda x : x / 10.0 - 40.0],
+        ITEM_INHUMI: ['out_humidity', 1, lambda x : x],
+        ITEM_OUTHUMI: ['out_humidity', 1, lambda x : x],
+        ITEM_ABSBARO: ['abs_baro', 2, lambda x : x / 10.0],
+        ITEM_RELBARO: ['rel_baro', 2, lambda x : x / 10.0],
+        ITEM_WINDDIRECTION: ['wind_dir', 2, lambda x : x],
+        ITEM_WINDSPEED: ['wind_speed', 2, lambda x : x / 10.0],
+        ITEM_GUSTSPEED: ['gust_speed', 2, lambda x : x / 10.0],
+        ITEM_RAINEVENT: ['rain_event', 4, lambda x : x / 10.0],
+        ITEM_RAINRATE: ['rain_rate', 4, lambda x : x / 10.0],
+        ITEM_RAINHOUR: ['rain_hour', 4, lambda x : x / 10.0],
+        ITEM_RAINDAY: ['rain_day', 4, lambda x : x / 10.0],
+        ITEM_RAINWEEK: ['rain_week', 4, lambda x : x / 10.0],
+        ITEM_RAINMONTH: ['rain_month', 4, lambda x : x / 10.0],
+        ITEM_RAINYEAR: ['rain_year', 4, lambda x : x / 10.0],
+        ITEM_RAINTOTALS: ['rain_totals', 4, lambda x : x / 10.0],
+        ITEM_LIGHT: ['light', 4, lambda x : x / 10.0],
+        ITEM_UV: ['uv', 2, lambda x : x],
+        ITEM_UVI: ['uvi', 1, lambda x : x],
+        }
+
+    @staticmethod
+    def decode_weather_data(raw):
+        data = dict()
+        i = 0
+        while i < len(raw):
+            item = item_raw = raw[i]
+            i += 1
+
+            has_date = (item & WH2300Station.ITEM_DATE) != 0
+            has_time = (item & WH2300Station.ITEM_TIME) != 0
+
+            if has_date:
+                item = item & ~WH2300Station.ITEM_DATE
+            if has_time:
+                item = item & ~WH2300Station.ITEM_TIME
+
+            label = None
+            obs = dict()
+            mapping = WH2300Station.ITEM_MAPPING.get(item)
+            if mapping:
+                # bytes are decoded MSB first, then function is applied
+                label = mapping[0]
+                obs['value'] = _decode_bytes(raw, i, mapping[1], mapping[2])
+                i += mapping[1]
+            else:
+                logdbg("no mapping for item id 0x%02x (0x%02x)"
+                       " at index %s of %s" % (item, item_raw, i, _fmt(raw)))
+                raise weewx.WeeWxIOError("no mapping for id 0x%02x" % item)
+
+            if has_date:
+                # year.month.day
+                obs['date'] = "%04d.%02d.%02d" % (
+                    2000 + raw[i], raw[i+1], raw[i+2])
+                i += 3
+
+            if has_time:
+                # hour.minute
+                obs['time'] = "%02d:%02d" % (raw[i], raw[i+1])
+                i += 2
+
+            logdbg("%s: %s (0x%02x 0x%02x)" % (label, obs, item, item_raw))
+            data[label] = obs
+        return data
+
 
 # define a main entry point for basic testing of the station.  invoke this as
 # follows from the weewx root dir:
@@ -532,6 +700,20 @@ class WH2300Station(object):
 # PYTHONPATH=bin python bin/user/wh2300.py
 
 if __name__ == '__main__':
+
+    TEST_DATA = [
+        "",
+        "",
+        ]
+
+    CORE_PARAMETERS = ['id', 'interval', 'latitude', 'longitude', 'mode', 'model', 'timezone', 'version']
+
+    def print_info(x, display_keys=None):
+        keys = x.keys() if not display_keys else list(set(x.keys()) & set(display_keys))
+        keys.sort()
+        for k in keys:
+            print "%s: %s" % (k, x[k])
+
     import optparse
 
     usage = """%prog [options] [--debug] [--help]"""
@@ -543,6 +725,8 @@ if __name__ == '__main__':
                       help='display driver version')
     parser.add_option('--debug', dest='debug', action='store_true',
                       help='display diagnostic information while running')
+    parser.add_option('--action', dest='action', default='current',
+                      help='what to do: eeprom, current')
     (options, args) = parser.parse_args()
 
     if options.version:
@@ -552,10 +736,20 @@ if __name__ == '__main__':
     if options.debug:
         syslog.setlogmask(syslog.LOG_UPTO(syslog.LOG_DEBUG))
 
-    with WH2300Station() as s:
-        print s.get_station_info()
-        while True:
-            raw = s.get_current()
-            print "raw:", raw
-            print "parsed:", WH2300Station.parse_raw(raw)
-            time.sleep(5)
+    if options.action == 'test-decoder':
+        for row in TEST_DATA:
+            print WH2300Station.decode_weather_data(row)
+    elif options.action == 'eeprom':
+        with WH2300Station() as s:
+            print_info(s.get_station_info())
+    elif options.action == 'eeprom-core':
+        with WH2300Station() as s:
+            print_info(s.get_station_info(), CORE_PARAMETERS)
+    elif options.action == 'current':
+        with WH2300Station() as s:
+            while True:
+                raw = s.get_current()
+                if options.debug:
+                    print "raw:", _fmt(raw)
+                print WH2300Station.decode_weather_data(raw)
+                time.sleep(5)
