@@ -9,7 +9,7 @@ def loader():
 class WH2300Installer(ExtensionInstaller):
     def __init__(self):
         super(WH2300Installer, self).__init__(
-            version="0.1",
+            version="0.2",
             name='wh2300',
             description='Collect data from wh2300 weather stations',
             author="Matthew Wall",

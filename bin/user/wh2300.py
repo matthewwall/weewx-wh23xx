@@ -160,7 +160,7 @@ import weewx.drivers
 from weewx.wxformulas import calculate_rain
 
 DRIVER_NAME = 'WH2300'
-DRIVER_VERSION = '0.1'
+DRIVER_VERSION = '0.2'
 
 def loader(config_dict, _):
     return WH2300Driver(**config_dict[DRIVER_NAME])
@@ -231,7 +231,7 @@ class WH2300Driver(weewx.drivers.AbstractDevice):
         loginf('driver version is %s' % DRIVER_VERSION)
         self._model = stn_dict.get('model', 'Tycon TP2700')
         self._poll_interval = int(stn_dict.get('poll_interval', 15))
-        loginf('poll interval is %s' % poll_interval)
+        loginf('poll interval is %s' % self._poll_interval)
         max_tries = int(stn_dict.get('max_tries', 10))
         retry_wait = int(stn_dict.get('retry_wait', 10))
         self.last_rain = None
@@ -249,27 +249,28 @@ class WH2300Driver(weewx.drivers.AbstractDevice):
             raw = self._station.get_current()
             if raw:
                 logdbg("raw data: %s" % raw)
-                parsed = WH2300Station.decode_weather_data(raw)
-                logdbg("parsed data: %s" % parsed)
-                packet = self._data_to_packet(parsed)
+                decoded = WH2300Station.decode_weather_data(raw)
+                logdbg("decoded data: %s" % decoded)
+                packet = self._data_to_packet(decoded)
                 yield packet
             time.sleep(self._poll_interval)
 
     def _data_to_packet(self, data):
-        pkt = {'dateTime': int(time.time() + 0.5), 'usUnits': weewx.US}
-        pkt['windDir'] = data.get('wind_dir')
-        pkg['windSpeed'] = data.get('wind_speed')
-        pkg['windGust'] = data.get('gust_speed')
-        pkg['inHumidity'] = data.get('humidity_in')
-        pkg['outHumidity'] = data.get('humidity_out')
-        pkg['inTemp'] = data.get('temperature_in')
-        pkg['outTemp'] = data.get('temperature_out')
-        pkg['pressure'] = data.get('pressure')
-        pkg['light'] = data.get('light')
-        pkg['UV'] = data.get('uv')
-        pkt['rain'] = calculate_rain(data.get('rain_total'), self.last_rain)
-        pkt['rxCheckPercent'] = (1 - data.get('no_sensors', 1)) * 100
-        self.last_rain = data.get('rain_total')
+        pkt = {'dateTime': int(time.time() + 0.5), 'usUnits': weewx.METRICWX}
+        pkt['windDir'] = data.get('wind_dir', {}).get('value')
+        pkt['windSpeed'] = data.get('wind_speed', {}).get('value')
+        pkt['windGust'] = data.get('gust_speed', {}).get('value')
+        pkt['inHumidity'] = data.get('in_humidity', {}).get('value')
+        pkt['outHumidity'] = data.get('out_humidity', {}).get('value')
+        pkt['inTemp'] = data.get('in_temp', {}).get('value')
+        pkt['outTemp'] = data.get('out_temperature', {}).get('value')
+        pkt['pressure'] = data.get('abs_baro', {}).get('value')
+        pkt['light'] = data.get('light', {}).get('value')
+        pkt['UV'] = data.get('uv', {}).get('value')
+        pkt['UVI'] = data.get('uvi', {}).get('value')
+        rain_total = data.get('rain_totals', {}).get('value')
+        pkt['rain'] = calculate_rain(rain_total, self.last_rain)
+        self.last_rain = rain_total
         return pkt
 
 
@@ -348,13 +349,12 @@ class WH2300Station(object):
     ITEM_TIME = 0x40
     ITEM_DATE = 0x80
 
-    def __init__(self, vendor_id=0x10c4, product_id=0x8468, interface=0,
-                 max_tries=10, retry_wait=5):
-        self.vendor_id = vendor_id
-        self.product_id = product_id
-        self.iface = interface
+    def __init__(self, max_tries=10, retry_wait=5):
         self.max_tries = max_tries
         self.retry_wait = retry_wait
+        self.vendor_id = 0x10c4
+        self.product_id = 0x8468
+        self.iface = 0
         self.timeout = 1000
         self.devh = None
 
@@ -629,7 +629,7 @@ class WH2300Station(object):
         ITEM_DEWPOINT: ['dewpoint', 2, lambda x : x / 10.0 - 40.0],
         ITEM_WINDCHILL: ['windchill', 2, lambda x : x / 10.0 - 40.0],
         ITEM_HEATINDEX: ['heatindex', 2, lambda x : x / 10.0 - 40.0],
-        ITEM_INHUMI: ['out_humidity', 1, lambda x : x],
+        ITEM_INHUMI: ['in_humidity', 1, lambda x : x],
         ITEM_OUTHUMI: ['out_humidity', 1, lambda x : x],
         ITEM_ABSBARO: ['abs_baro', 2, lambda x : x / 10.0],
         ITEM_RELBARO: ['rel_baro', 2, lambda x : x / 10.0],
@@ -702,8 +702,8 @@ class WH2300Station(object):
 if __name__ == '__main__':
 
     TEST_DATA = [
-        "",
-        "",
+        "01 02 8f 02 02 13 03 02 11 04 02 13 05 02 13 06 32 07 63 08 27 f0 09 27 b2 0a 00 5a 0b 00 2b 0c 00 3b 0e 00 00 00 00 10 00 00 00 75 11 00 00 00 a2 12 00 00 00 75 13 00 00 04 c5 14 00 00 04 c5 15 00 ff ff ff 16 ff ff 17 ff",
+        "01 02 90 02 02 13 03 02 11 04 02 13 05 02 13 06 32 07 63 08 27 f0 09 27 b2 0a 00 5a 0b 00 17 0c 00 21 0e 00 00 00 00 10 00 00 00 75 11 00 00 00 a2 12 00 00 00 75 13 00 00 04 c5 14 00 00 04 c5 15 00 ff ff ff 16 ff ff 17 ff",
         ]
 
     CORE_PARAMETERS = ['id', 'interval', 'latitude', 'longitude', 'mode', 'model', 'timezone', 'version']
@@ -726,7 +726,7 @@ if __name__ == '__main__':
     parser.add_option('--debug', dest='debug', action='store_true',
                       help='display diagnostic information while running')
     parser.add_option('--action', dest='action', default='current',
-                      help='what to do: eeprom, current')
+                      help='what to do: eeprom-core, eeprom, current, test-decoder')
     (options, args) = parser.parse_args()
 
     if options.version:
@@ -738,7 +738,8 @@ if __name__ == '__main__':
 
     if options.action == 'test-decoder':
         for row in TEST_DATA:
-            print WH2300Station.decode_weather_data(row)
+            raw = [int(x, 16) for x in row.split()]
+            print WH2300Station.decode_weather_data(raw)
     elif options.action == 'eeprom':
         with WH2300Station() as s:
             print_info(s.get_station_info())
