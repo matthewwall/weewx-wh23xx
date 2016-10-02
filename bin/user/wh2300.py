@@ -25,6 +25,8 @@ in the station, which is factory set to 126.7.  The station reports light in
 lux, radiation in micro-W per square meter (labelled as UV), and UV index on
 a scale of 1-15 (labelled as UVI).
 
+The data logger in the console retains data through a power cycle.
+
 Current data include the following:
 
   in temperature
@@ -484,27 +486,27 @@ class WH2300Station(object):
                     return dev
         return None
 
+    def _write(self, label, buf):
+        logdbg("%s: cmdbuf: %s" % (label, _fmt(buf)))
+        cnt = self.devh.interruptWrite(self.USB_ENDPOINT_OUT, buf, self.timeout)
+        if cnt != len(buf):
+            raise weewx.WeeWxIOError('%s: bad write length=%s for command %s' %
+                                     (label, cnt, _fmt(buf)))
+
+    def _read(self):
+        return None
+
     def _time_sync(self, ts):
+        logdbg("time sync to %s (%s)" % (ts, timestamp_to_string(ts)))
         t = time.localtime(ts)
         cmd = [WH2300Station.TIME_SYNC,
-               t.tm_year - 2000,
-               t.tm_mon,
-               t.tm_mday,
-               t.tm_hour,
-               t.tm_min,
-               t.tm_sec,
-               0] # 1/125 of a second
+               t.tm_year - 2000, t.tm_mon, t.tm_mday,
+               t.tm_hour, t.tm_min, t.tm_sec, 0]
         chksum = _calc_checksum(cmd)
         buf = [0x02, 0x09]
         buf.extend(cmd)
         buf.append(chksum)
-        logdbg("time_sync: cmdbuf: %s" % _fmt(buf))
-
-        cnt = self.devh.interruptWrite(self.USB_ENDPOINT_OUT, buf, self.timeout)
-        if cnt != len(buf):
-            raise weewx.WeeWxIOError('time_sync: bad interrupt write: '
-                                     '%s != %s' % (cnt, len(buf)))
-        logdbg("time sync to %s (%s)" % (ts, timestamp_to_string(ts)))
+        self._write("time_sync", buf)
 
     def _read_eeprom(self, addr, size):
         # initiate a read by sending the READ_EEPROM command.
@@ -515,12 +517,7 @@ class WH2300Station(object):
         buf = [0x02, 0x05]
         buf.extend(cmd)
         buf.append(chksum)
-        logdbg("read_eeprom: cmdbuf: %s" % _fmt(buf))
-
-        cnt = self.devh.interruptWrite(self.USB_ENDPOINT_OUT, buf, self.timeout)
-        if cnt != len(buf):
-            raise weewx.WeeWxIOError('read_eeprom: bad interrupt write: '
-                                     '%s != %s' % (cnt, len(buf)))
+        self._write("read_eeprom", buf)
 
         # now do the actual read.
         buf = self.devh.interruptRead(
@@ -541,14 +538,10 @@ class WH2300Station(object):
 
     def _read_record(self):
         # initiate a read by sending the READ_RECORD command.
-        buf = [0x02,
-               0x02,
+        buf = [0x02, 0x02,
                WH2300Station.READ_RECORD,
                WH2300Station.READ_RECORD]
-        cnt = self.devh.interruptWrite(self.USB_ENDPOINT_OUT, buf, self.timeout)
-        if cnt != len(buf):
-            raise weewx.WeeWxIOError('read_record: bad interrupt write: '
-                                     '%s != %s' % (cnt, len(buf)))
+        self._write("read_record", buf)
 
         # now do the actual read.  the station should respond with a single
         # READ_RECORD response spread over (probably) multiple USB packets.
@@ -593,19 +586,33 @@ class WH2300Station(object):
                (_fmt(rbuf), chksum))
         return rbuf
 
+    def _clear_max_min(self):
+        logdbg("clear max/min")
+        buf = [0x02, 0x02,
+               WH2300Station.CLEAR_MAX_MIN_DAY,
+               WH2300Station.CLEAR_MAX_MIN_DAY]
+        self._write("clear_max_min", buf)
+        logdbg("max/min cleared")
+
+    def _clear_history(self):
+        logdbg("clear history")
+        buf = [0x02, 0x02,
+               WH2300Station.CLEAR_HISTORY,
+               WH2300Station.CLEAR_HISTORY]
+        self._write("clear_history", buf)
+        logdbg("history cleared")
+
     def get_current(self):
         return self._read_record()
 
-    def set_time(self):
+    def sync_time(self):
         self._time_sync(time.time())
 
     def clear_max_min(self):
-        # FIXME: implement clear_max_min
-        raise NotImplementedError("clear_max_min is not implemented")
+        self._clear_max_min()
 
     def clear_history(self):
-        # FIXME: implement clear history
-        raise NotImplementedError("clear_history is not implemented")
+        self._clear_history()
 
     def get_station_info(self):
         # decode the memory starting at address 0x0, which contains the station
@@ -857,7 +864,10 @@ if __name__ == '__main__':
                 time.sleep(5)
     elif options.action == 'sync-time':
         with WH2300Station() as s:
-            s.set_time()
+            s.sync_time()
+    elif options.action == 'clear-history':
+        with WH2300Station() as s:
+            s.clear_history()
     elif options.action == 'test-decode-info':
         for row in INFO_DATA:
             raw = [int(x, 16) for x in row.split()]
