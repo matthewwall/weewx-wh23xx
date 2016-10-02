@@ -3,11 +3,67 @@
 #
 # Thanks to Lloyd Kinsella
 
+# FIXME: this should be called wh23xx
+
 """
-Collect data from Fine Offset WH2300 stations.
+Collect data from Fine Offset WH2300 stations, including:
+
+  WH2300 (with RCC)
+  WH2301 (no RCC)
+  WH4000
+  Tycon TP2700
 
 Based on the protocol specified in "TP2700 EEPROM data structure" V1.0 with
 serial number FOS-ENG-022-A for model WH2300, and "TP2700 PC Protocol".
+
+The console works with the all-in-one instrument cluster, or the separate
+instruments.
+
+The station includes a light sensor.  The light sensor output is in lux, but
+the station has a multiplicative lux-to-radiation conversion using a constant
+in the station, which is factory set to 126.7.  The station reports light in
+lux, radiation in micro-W per square meter (labelled as UV), and UV index on
+a scale of 1-15 (labelled as UVI).
+
+Current data include the following:
+
+  in temperature
+  out temperature
+  dewpoint
+  windchill
+  heatindex
+  in humidity
+  out humidity
+  abs pressure
+  rel pressure
+  wind direction
+  wind speed
+  gust speed
+  rain event
+  rain rate
+  rain hour
+  rain day
+  rain week
+  rain month
+  rain year
+  rain total
+  light
+  uv (radiation)
+  uv index
+
+Historical records include the following:
+
+  wind direction
+  wind speed
+  gust speed
+  rain total
+  in humidity
+  out humidity
+  in temperature
+  out temperature
+  pressure
+  light
+  UV (radiation)
 
 The station has 3552 records.  Each record is 18 bytes.  The timestamp for each
 record is stored separately from the record.
@@ -33,7 +89,7 @@ each 8-byte segment is a timestamp
 0x0640 to 0xffff : records
 each record is 18 bytes
 
-Decoding
+Decoding current weather data
 
 Temperature is value + 40C
 Temperature, pressure, wind speed, rainfall, light are value / 10.0
@@ -160,7 +216,7 @@ import weewx.drivers
 from weewx.wxformulas import calculate_rain
 
 DRIVER_NAME = 'WH2300'
-DRIVER_VERSION = '0.2'
+DRIVER_VERSION = '0.3'
 
 def loader(config_dict, _):
     return WH2300Driver(**config_dict[DRIVER_NAME])
@@ -200,7 +256,7 @@ def _get_bit(x, bit):
 def _decode_bytes(buf, idx, nbytes, func):
     # if all bytes are 0xff, the value is not valid...
     for j in range(nbytes):
-        if buf[idx] != 0xff:
+        if buf[idx + j] != 0xff:
             break
     else:
         return None
@@ -247,11 +303,12 @@ class WH2300Driver(weewx.drivers.AbstractDevice):
     def genLoopPackets(self):
         while True:
             raw = self._station.get_current()
+            logdbg("raw data: %s" % raw)
             if raw:
-                logdbg("raw data: %s" % raw)
                 decoded = WH2300Station.decode_weather_data(raw)
                 logdbg("decoded data: %s" % decoded)
                 packet = self._data_to_packet(decoded)
+                logdbg("packet: %s" % packet)
                 yield packet
             time.sleep(self._poll_interval)
 
@@ -263,30 +320,25 @@ class WH2300Driver(weewx.drivers.AbstractDevice):
         pkt['inHumidity'] = data.get('in_humidity', {}).get('value')
         pkt['outHumidity'] = data.get('out_humidity', {}).get('value')
         pkt['inTemp'] = data.get('in_temp', {}).get('value')
-        pkt['outTemp'] = data.get('out_temperature', {}).get('value')
+        pkt['outTemp'] = data.get('out_temp', {}).get('value')
         pkt['pressure'] = data.get('abs_baro', {}).get('value')
         pkt['light'] = data.get('light', {}).get('value')
-        pkt['UV'] = data.get('uv', {}).get('value')
-        pkt['UVI'] = data.get('uvi', {}).get('value')
+        pkt['radiation'] = data.get('uv', {}).get('value')
+        pkt['UV'] = data.get('uvi', {}).get('value')
         rain_total = data.get('rain_totals', {}).get('value')
         pkt['rain'] = calculate_rain(rain_total, self.last_rain)
         self.last_rain = rain_total
+        # FIXME: get measure of connectivity to sensors
         return pkt
 
 
 class WH2300Station(object):
-    # these are generic HID values
-    USB_HID_GET_REPORT = 0x01
-    USB_HID_SET_REPORT = 0x09
-    USB_HID_INPUT_REPORT = 0x100
-    USB_HID_OUTPUT_REPORT = 0x200
-
-    # from lsusb -v we find these values
+    # usb values obtained from 'sudo lsusb -v'
     USB_ENDPOINT_IN = 0x82
     USB_ENDPOINT_OUT = 0x02
     USB_PACKET_SIZE = 0x40 # 64 bytes
 
-    # from the vendor documentation we have values for these parameters
+    # from the vendor documentation
     TIME_SYNC = 0x01
     READ_EEPROM = 0x02
     WRITE_EEPROM = 0x03
@@ -374,8 +426,6 @@ class WH2300Station(object):
         self.devh = dev.open()
         if not self.devh:
             raise weewx.WeeWxIOError('Open USB device failed')
-
-#        self.devh.reset()
 
         # be sure kernel does not claim the interface on linux systems
         try:
@@ -465,6 +515,7 @@ class WH2300Station(object):
         return buf
 
     def _read_record(self):
+        # initiate a read by sending the READ_RECORD command.
         buf = [0x02,
                0x02,
                WH2300Station.READ_RECORD,
@@ -477,34 +528,39 @@ class WH2300Station(object):
             raise weewx.WeeWxIOError('read_record: bad interrupt write: '
                                      '%s != %s' % (cnt, len(buf)))
 
+        # now do the actual read.  the station should respond with a single
+        # READ_RECORD response spread over (probably) multiple USB packets.
+        # each USB packet starts with two bytes, 0x01 followed by the usb
+        # packet size.  we check these, but ignore them.  the response
+        # contains the READ_RECORD reply, the size of the reply data, the
+        # reply data, and a checksum.
         tmp = []
         record_size = 0
         buf = self.devh.interruptRead(
             self.USB_ENDPOINT_IN,
             self.USB_PACKET_SIZE,
             self.timeout)
-        if buf:
+        if not buf:
+            return None
+        logdbg("read_record: buf: %s (%s)" % (_fmt(buf), len(buf)))
+        if buf[0] != 0x01:
+            raise weewx.WeeWxIOError('read_record: bad first byte: '
+                                     '0x%02x != 0x01' % buf[0])
+        if buf[2] != WH2300Station.READ_RECORD:
+            raise weewx.WeeWxIOError('read_record: missing READ_RECORD: '
+                                     '0x%02x != 0x%02x' %
+                                     (buf[2], WH2300Station.READ_RECORD))
+        record_size = buf[3]
+        logdbg("record_size: %s" % record_size)
+        tmp.extend(buf[4:]) # skip 0x01, payload_size, 0x04, record_size
+        while len(tmp) < record_size:
+            # FIXME: prevent infinite loop
+            buf = self.devh.interruptRead(
+                self.USB_ENDPOINT_IN,
+                self.USB_PACKET_SIZE,
+                self.timeout)
             logdbg("read_record: buf: %s (%s)" % (_fmt(buf), len(buf)))
-            if buf[0] != 0x01:
-                raise weewx.WeeWxIOError('read_record: bad first byte: '
-                                         '0x%02x != 0x01' % buf[0])
-            if buf[2] != WH2300Station.READ_RECORD:
-                raise weewx.WeeWxIOError('read_record: missing READ_RECORD: '
-                                         '0x%02x != 0x%02x' %
-                                         (buf[2], WH2300Station.READ_RECORD))
-            logdbg("payload_size: %s" % buf[1])
-            record_size = buf[3]
-            logdbg("record_size: %s" % record_size)
-            tmp.extend(buf[4:]) # skip 0x01, payload_size, 0x04, record_size
-            while len(tmp) < record_size:
-                # FIXME: prevent infinite loop
-                buf = self.devh.interruptRead(
-                    self.USB_ENDPOINT_IN,
-                    self.USB_PACKET_SIZE,
-                    self.timeout)
-                logdbg("read_record: buf: %s (%s)" % (_fmt(buf), len(buf)))
-                logdbg("payload_size: %s" % buf[1])
-                tmp.extend(buf[2:]) # skip the first two bytes: 0x01 and size
+            tmp.extend(buf[2:]) # skip 0x01 and payload_size
         rbuf = tmp[0:record_size] # prune off any dangling bytes
 
         # verify the checksum for the record
@@ -587,7 +643,7 @@ class WH2300Station(object):
     @staticmethod
     def decode_history_record(raw):
         # each record is 18 bytes
-        # FIXME: some of the values for invalid data do not make sense:
+        # NOTE: some of the values for invalid data do not make sense:
         #  light: 0xfff specified, using 0xffffff
         #  uv: 0xff specified, using 0xffff
         #  wind_dir: 0x1f specified, using 0x1ff
@@ -618,7 +674,7 @@ class WH2300Station(object):
         x = (raw[15] << 16) + (raw[14] << 8) + raw[13]
         data['light'] = None if x == 0xffffff else x / 10.0 # 0.0-300000.0 lux
         x = (raw[17] << 8) + raw[16]
-        data['uv'] = None if x == 0xffff else x # 0-20000 uW/m^2
+        data['uv'] = None if x == 0xffff else x / 1000.0 # 0-20000 W/m^2
         return data
 
     # this map associates the item identifier with [label, num_bytes, function]
@@ -645,7 +701,7 @@ class WH2300Station(object):
         ITEM_RAINYEAR: ['rain_year', 4, lambda x : x / 10.0],
         ITEM_RAINTOTALS: ['rain_totals', 4, lambda x : x / 10.0],
         ITEM_LIGHT: ['light', 4, lambda x : x / 10.0],
-        ITEM_UV: ['uv', 2, lambda x : x],
+        ITEM_UV: ['uv', 2, lambda x : x / 1000.0],
         ITEM_UVI: ['uvi', 1, lambda x : x],
         }
 
@@ -685,9 +741,14 @@ class WH2300Station(object):
                 i += 3
 
             if has_time:
-                # hour.minute
+                # hour:minute
                 obs['time'] = "%02d:%02d" % (raw[i], raw[i+1])
                 i += 2
+
+            # workaround firmware bug for invalid light value
+            if (item == WH2300Station.ITEM_LIGHT and
+                obs['value'] == 0xffffff / 10.0):
+                obs['value'] = None
 
             logdbg("%s: %s (0x%02x 0x%02x)" % (label, obs, item, item_raw))
             data[label] = obs

@@ -1,3 +1,11 @@
+0.3 01oct2016
+* fixed out_temp typo
+* fixed uv index
+* added solar radiation
+* fixed bug in check for invalid values when decoding bytes
+* fix solar radiation multiplier
+* added workaround for firmware bug in light value when no sensor found
+
 0.2 01oct2016
 * proper reading of all current values
 
