@@ -1,3 +1,8 @@
+0.4 02oct2016
+* initial success at reading eeprom addresses
+* added option to dump station memory
+* added decoder tests for current and historical data
+
 0.3 01oct2016
 * fixed out_temp typo
 * fixed uv index

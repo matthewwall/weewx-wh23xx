@@ -100,14 +100,14 @@ For 4 byte word, 0xffffffff indicates invalid
 
 Commands
 
-TIME_SYNC         0x01
-READ_EEPROM       0x02
+TIME_SYNC         0x01    [0x02 0x09]
+READ_EEPROM       0x02    [0x02 0x05]
 WRITE_EEPROM      0x03
-READ_RECORD       0x04
-READ_MAX          0x05
-READ_MIN          0x06
-READ_MAX_DAY      0x07
-READ_MIN_DAY      0x08
+READ_RECORD       0x04    [0x02 0x02]
+READ_MAX          0x05    [0x02 0x02]
+READ_MIN          0x06    [0x02 0x02]
+READ_MAX_DAY      0x07    [0x02 0x02]
+READ_MIN_DAY      0x08    [0x02 0x02]
 CLEAR_MAX_MIN_DAY 0x09
 PARAM_CHANGED     0x0a
 CLEAR_HISTORY     0x0b
@@ -216,7 +216,7 @@ import weewx.drivers
 from weewx.wxformulas import calculate_rain
 
 DRIVER_NAME = 'WH2300'
-DRIVER_VERSION = '0.3'
+DRIVER_VERSION = '0.4'
 
 def loader(config_dict, _):
     return WH2300Driver(**config_dict[DRIVER_NAME])
@@ -241,7 +241,7 @@ def logerr(msg):
 #' '.join(["%0.2X" % ord(c) for c in buf]))
 def _fmt(buf):
     if buf:
-        return ' '.join(["%02x" % x for x in buf])
+        return "%s (len=%s)" % (' '.join(["%02x" % x for x in buf]), len(buf))
     return ''
 
 def _calc_checksum(a):
@@ -265,6 +265,12 @@ def _decode_bytes(buf, idx, nbytes, func):
     for j in range(nbytes):
         x += buf[idx + j] << ((nbytes - j - 1) * 8)
     return func(x)
+
+def _signed(x):
+    v = x & 0xf
+    if x & 0xf0 == 0xf0:
+        v *= -1
+    return v
 
 
 class WH2300ConfigurationEditor(weewx.drivers.AbstractConfEditor):
@@ -291,7 +297,7 @@ class WH2300Driver(weewx.drivers.AbstractDevice):
         max_tries = int(stn_dict.get('max_tries', 10))
         retry_wait = int(stn_dict.get('retry_wait', 10))
         self.last_rain = None
-        self._station = WH2300Station(max_tries, retry_wait)
+        self._station = WH2300Station()
         self._station.open()
 
     def closePort(self):
@@ -313,6 +319,8 @@ class WH2300Driver(weewx.drivers.AbstractDevice):
             time.sleep(self._poll_interval)
 
     def _data_to_packet(self, data):
+        # convert from the dictionary-of-dictionaries to a simple dictionary
+        # of observation values.
         pkt = {'dateTime': int(time.time() + 0.5), 'usUnits': weewx.METRICWX}
         pkt['windDir'] = data.get('wind_dir', {}).get('value')
         pkt['windSpeed'] = data.get('wind_speed', {}).get('value')
@@ -401,9 +409,7 @@ class WH2300Station(object):
     ITEM_TIME = 0x40
     ITEM_DATE = 0x80
 
-    def __init__(self, max_tries=10, retry_wait=5):
-        self.max_tries = max_tries
-        self.retry_wait = retry_wait
+    def __init__(self):
         self.vendor_id = 0x10c4
         self.product_id = 0x8468
         self.iface = 0
@@ -433,12 +439,8 @@ class WH2300Station(object):
         except (AttributeError, usb.USBError):
             pass
 
-        # this works to unwedge the device, and seems to not cause problems.
-        # specific cases include when you do an interrupt write with bogus
-        # data.  use a reset to bring the station back to responsiveness.
-        # unfortunately it is not immediate.  sometimes it takes one reset.
-        # sometimes it takes two resets.
-        self.devh.reset()
+        # attempt to unwedge the device
+        self._reset()
 
         # attempt to claim the interface
         try:
@@ -457,6 +459,19 @@ class WH2300Station(object):
                 logerr("release interface failed: %s" % e)
             self.devh = None
 
+    def _reset(self):
+        # use a usb reset to restore communication with the station.
+        # specific cases include when you do an interrupt write with bogus
+        # data.  use a reset to bring the station back to responsiveness.
+        # unfortunately it is not immediate.  sometimes it takes one reset.
+        # sometimes it takes multiple resets.
+        for x in range(5):
+            try:
+                self.devh.reset()
+                break
+            except usb.USBError:
+                time.sleep(2)
+
     @staticmethod
     def _find_dev(vendor_id, product_id):
         """Find the vendor and product ID on the USB."""
@@ -468,35 +483,17 @@ class WH2300Station(object):
                     return dev
         return None
 
-    def get_data(self, addr, length):
-        logdbg("get %s bytes from address 0x%06x" % (length, addr))
-        buf = self._raw_read(addr, length)
-        return buf
-
-    def get_data_with_retry(self, addr, length=32):
-        for ntries in range(0, self.max_tries):
-            try:
-                return self.get_data(addr, length)
-            except (usb.USBError, weewx.WeeWxIOError), e:
-                loginf("Failed attempt %d of %d to get readings: %s" %
-                       (ntries + 1, self.max_tries, e))
-                time.sleep(self.retry_wait)
-        else:
-            msg = "Max retries (%d) exceeded for address 0x%06x" % (
-                self.max_tries, addr)
-            logerr(msg)
-            raise weewx.RetriesExceeded(msg)
-
     def _read_eeprom(self, addr, size):
+        # initiate a read by sending the READ_EEPROM command.
         addr_lo = addr & 0xff
         addr_hi = (addr / 256) & 0xff
         cmd = [WH2300Station.READ_EEPROM, addr_lo, addr_hi, size]
         chksum = _calc_checksum(cmd)
-        buf = [0x02, 0x02]
+        buf = [0x02, 0x05]
         buf.extend(cmd)
         buf.append(chksum)
-               
-        logdbg("read_eeprom: write: %s" % _fmt(buf))
+        logdbg("read_eeprom: cmdbuf: %s" % _fmt(buf))
+
         cnt = self.devh.interruptWrite(
             self.USB_ENDPOINT_OUT,
             buf,
@@ -505,14 +502,22 @@ class WH2300Station(object):
             raise weewx.WeeWxIOError('read_eeprom: bad interrupt write: '
                                      '%s != %s' % (cnt, len(buf)))
 
+        # now do the actual read.
         buf = self.devh.interruptRead(
             self.USB_ENDPOINT_IN,
-            size,
+            self.USB_PACKET_SIZE,
             self.timeout)
         if not buf:
-            raise weewx.WeeWxIOError('read_eeprom failed: bad interrupt read')
-        logdbg("read_eeprom: read: %s (%s)" % (_fmt(buf), len(buf)))
-        return buf
+            raise weewx.WeeWxIOError('read_eeprom failed: empty read')
+        logdbg("read_eeprom: buf: %s" % _fmt(buf))
+        if buf[0] != 0x01 or buf[2] != WH2300Station.READ_EEPROM:
+            raise weewx.WeeWxIOError('read_eeprom: bad reply: '
+                                     'got %02x %02x %02x %02x, '
+                                     'exp 01 .. %02x ..' %
+                                     (buf[0], buf[1], buf[2], buf[3],
+                                      WH2300Station.READ_EEPROM))
+        logdbg("size: %s" % buf[3])
+        return buf[4:]
 
     def _read_record(self):
         # initiate a read by sending the READ_RECORD command.
@@ -542,7 +547,7 @@ class WH2300Station(object):
             self.timeout)
         if not buf:
             return None
-        logdbg("read_record: buf: %s (%s)" % (_fmt(buf), len(buf)))
+        logdbg("read_record: buf: %s" % _fmt(buf))
         if buf[0] != 0x01:
             raise weewx.WeeWxIOError('read_record: bad first byte: '
                                      '0x%02x != 0x01' % buf[0])
@@ -559,7 +564,7 @@ class WH2300Station(object):
                 self.USB_ENDPOINT_IN,
                 self.USB_PACKET_SIZE,
                 self.timeout)
-            logdbg("read_record: buf: %s (%s)" % (_fmt(buf), len(buf)))
+            logdbg("read_record: buf: %s" % _fmt(buf))
             tmp.extend(buf[2:]) # skip 0x01 and payload_size
         rbuf = tmp[0:record_size] # prune off any dangling bytes
 
@@ -567,8 +572,8 @@ class WH2300Station(object):
         tmp = [WH2300Station.READ_RECORD, record_size]
         tmp.extend(rbuf)
         chksum = _calc_checksum(tmp)
-        logdbg("read_record: rbuf: %s len=%s chksum=0x%02x" %
-               (_fmt(rbuf), len(rbuf), chksum))
+        logdbg("read_record: rbuf: %s chksum=0x%02x" %
+               (_fmt(rbuf), chksum))
         return rbuf
 
     def get_current(self):
@@ -587,6 +592,8 @@ class WH2300Station(object):
         raise NotImplementedError("clear_history is not implemented")
 
     def get_station_info(self):
+        # decode the memory starting at address 0x0, which contains the station
+        # status and configuration info.  return the data as a dictionary.
         buf = self._read_eeprom(0x0000, 56)
         data = dict()
         data['eeprom'] = "0x%02x%02x" % (buf[0], buf[1]) # 0x55aa
@@ -621,8 +628,8 @@ class WH2300Station(object):
             data['alarm_enable_flag_3_bit%s' % i] = _get_bit(buf[0x17], i)
         data['rain_season'] = buf[0x18] # month 1..12
         data['interval'] = buf[0x1a] * 256 + buf[0x19] # seconds 8..14400 (240m)
-        data['lcd_contrast'] = buf[0x1b] # 0x17..0x1f
-        data['timezone'] = buf[0x1c] # -12..12
+        data['lcd_contrast'] = "%s (0x%02x)" % (buf[0x1b]-0x16, buf[0x1b]) # 0x17..0x1f
+        data['timezone'] = _signed(buf[0x1c]) # -12..12
         data['latitude'] = buf[0x1e] * 256 + buf[0x1d]
         data['longitude'] = buf[0x20] * 256 + buf[0x1f]
         data['weather'] = buf[0x21]
@@ -634,16 +641,17 @@ class WH2300Station(object):
         data['offset_pressure_abs'] = (buf[0x2a] * 256 + buf[0x29]) / 10.0
         data['offset_pressure_rel'] = (buf[0x2c] * 256 + buf[0x2b]) / 10.0
         data['offset_wind_dir'] = buf[0x2e] * 256 + buf[0x2d]
-        data['coefficient_wind'] = buf[0x2f]
-        data['coefficient_rain'] = buf[0x30]
-        data['coefficient_light'] = buf[0x32] * 256 + buf[0x31]
-        data['coefficient_uv'] = buf[0x34] * 256 + buf[0x33]
+        data['coefficient_wind'] = buf[0x2f] / 100.0 # 0.1..2.5
+        data['coefficient_rain'] = buf[0x30] / 100.0 # 0.1..2.5
+        data['coefficient_light'] = (buf[0x32] * 256 + buf[0x31]) / 100.0 # 0.1..10.0
+        data['coefficient_uv'] = (buf[0x34] * 256 + buf[0x33]) / 100.0 # 0.1..10.0
         return data
 
     @staticmethod
     def decode_history_record(raw):
         # each record is 18 bytes
-        # NOTE: some of the values for invalid data do not make sense:
+        #
+        # NOTE: the docs specify values for invalid that do not make sense:
         #  light: 0xfff specified, using 0xffffff
         #  uv: 0xff specified, using 0xffff
         #  wind_dir: 0x1f specified, using 0x1ff
@@ -678,7 +686,7 @@ class WH2300Station(object):
         return data
 
     # this map associates the item identifier with [label, num_bytes, function]
-    # required for decoding from raw bytes.
+    # required for decoding weather data from raw bytes.
     ITEM_MAPPING = {
         ITEM_INTEMP: ['in_temp', 2, lambda x : x / 10.0 - 40.0],
         ITEM_OUTTEMP: ['out_temp', 2, lambda x : x / 10.0 - 40.0],
@@ -707,6 +715,15 @@ class WH2300Station(object):
 
     @staticmethod
     def decode_weather_data(raw):
+        # decode a sequence of bytes into current weather data.  the sequence
+        # can be variable length.  an identifier byte is followed by one to
+        # four data bytes.  identifier bytes have a value of ITEM_* bitwise
+        # or with date and/or time if there is an associated time.
+        #
+        # so we simply walk the array, decoding as we go.  put the result into
+        # a dictionary that contains a dictionary for each observation.
+        #
+        # if there is a failure, log it and bail out.
         data = dict()
         i = 0
         while i < len(raw):
@@ -762,12 +779,16 @@ class WH2300Station(object):
 
 if __name__ == '__main__':
 
-    TEST_DATA = [
+    CURRENT_DATA = [
         "01 02 8f 02 02 13 03 02 11 04 02 13 05 02 13 06 32 07 63 08 27 f0 09 27 b2 0a 00 5a 0b 00 2b 0c 00 3b 0e 00 00 00 00 10 00 00 00 75 11 00 00 00 a2 12 00 00 00 75 13 00 00 04 c5 14 00 00 04 c5 15 00 ff ff ff 16 ff ff 17 ff",
         "01 02 90 02 02 13 03 02 11 04 02 13 05 02 13 06 32 07 63 08 27 f0 09 27 b2 0a 00 5a 0b 00 17 0c 00 21 0e 00 00 00 00 10 00 00 00 75 11 00 00 00 a2 12 00 00 00 75 13 00 00 04 c5 14 00 00 04 c5 15 00 ff ff ff 16 ff ff 17 ff",
         ]
-
-    CORE_PARAMETERS = ['id', 'interval', 'latitude', 'longitude', 'mode', 'model', 'timezone', 'version']
+    HISTORY_DATA = [
+        "",
+        "",
+        ]
+    CORE_PARAMETERS = ['eeprom', 'id', 'interval', 'latitude', 'longitude',
+                       'mode', 'model', 'timezone', 'version']
 
     def print_info(x, display_keys=None):
         keys = x.keys() if not display_keys else list(set(x.keys()) & set(display_keys))
@@ -787,7 +808,7 @@ if __name__ == '__main__':
     parser.add_option('--debug', dest='debug', action='store_true',
                       help='display diagnostic information while running')
     parser.add_option('--action', dest='action', default='current',
-                      help='what to do: eeprom-core, eeprom, current, test-decoder')
+                      help='actions include: eeprom, eeprom-all, current, test-decode-current, test-decode-history, dump')
     (options, args) = parser.parse_args()
 
     if options.version:
@@ -797,16 +818,16 @@ if __name__ == '__main__':
     if options.debug:
         syslog.setlogmask(syslog.LOG_UPTO(syslog.LOG_DEBUG))
 
-    if options.action == 'test-decoder':
-        for row in TEST_DATA:
-            raw = [int(x, 16) for x in row.split()]
-            print WH2300Station.decode_weather_data(raw)
-    elif options.action == 'eeprom':
-        with WH2300Station() as s:
-            print_info(s.get_station_info())
-    elif options.action == 'eeprom-core':
+    if options.action == 'eeprom':
         with WH2300Station() as s:
             print_info(s.get_station_info(), CORE_PARAMETERS)
+    elif options.action == 'eeprom-all':
+        with WH2300Station() as s:
+            print_info(s.get_station_info())
+    elif options.action == 'test-decode-current':
+        for row in CURRENT_DATA:
+            raw = [int(x, 16) for x in row.split()]
+            print WH2300Station.decode_weather_data(raw)
     elif options.action == 'current':
         with WH2300Station() as s:
             while True:
@@ -815,3 +836,18 @@ if __name__ == '__main__':
                     print "raw:", _fmt(raw)
                 print WH2300Station.decode_weather_data(raw)
                 time.sleep(5)
+    elif options.action == 'test-decode-history':
+        for row in HISTORY_DATA:
+            raw = [int(x, 16) for x in row.split()]
+            print WH2300Station.decode_history_record(raw)
+    elif options.action == 'eeprom-time':
+        with WH2300Station() as s:
+            raw = s._read_eeprom(0x02c8, 8)
+            print _fmt(raw[0:8])
+            print "%04d.%02d.%02d %02d:%02d %ss" % (
+                2000 + raw[0], raw[1], raw[2], raw[3], raw[4],
+                raw[5] + raw[6] * 256)
+    elif options.action == 'dump':
+        with WH2300Station() as s:
+            for i in range(0, 128, 64):
+                print i, _fmt(s._read_eeprom(i, 64))
