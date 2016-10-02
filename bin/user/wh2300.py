@@ -213,6 +213,7 @@ import time
 import usb
 
 import weewx.drivers
+from weeutil.weeutil import timestamp_to_string
 from weewx.wxformulas import calculate_rain
 
 DRIVER_NAME = 'WH2300'
@@ -483,6 +484,28 @@ class WH2300Station(object):
                     return dev
         return None
 
+    def _time_sync(self, ts):
+        t = time.localtime(ts)
+        cmd = [WH2300Station.TIME_SYNC,
+               t.tm_year - 2000,
+               t.tm_mon,
+               t.tm_mday,
+               t.tm_hour,
+               t.tm_min,
+               t.tm_sec,
+               0] # 1/125 of a second
+        chksum = _calc_checksum(cmd)
+        buf = [0x02, 0x09]
+        buf.extend(cmd)
+        buf.append(chksum)
+        logdbg("time_sync: cmdbuf: %s" % _fmt(buf))
+
+        cnt = self.devh.interruptWrite(self.USB_ENDPOINT_OUT, buf, self.timeout)
+        if cnt != len(buf):
+            raise weewx.WeeWxIOError('time_sync: bad interrupt write: '
+                                     '%s != %s' % (cnt, len(buf)))
+        logdbg("time sync to %s (%s)" % (ts, timestamp_to_string(ts)))
+
     def _read_eeprom(self, addr, size):
         # initiate a read by sending the READ_EEPROM command.
         addr_lo = addr & 0xff
@@ -494,10 +517,7 @@ class WH2300Station(object):
         buf.append(chksum)
         logdbg("read_eeprom: cmdbuf: %s" % _fmt(buf))
 
-        cnt = self.devh.interruptWrite(
-            self.USB_ENDPOINT_OUT,
-            buf,
-            self.timeout)
+        cnt = self.devh.interruptWrite(self.USB_ENDPOINT_OUT, buf, self.timeout)
         if cnt != len(buf):
             raise weewx.WeeWxIOError('read_eeprom: bad interrupt write: '
                                      '%s != %s' % (cnt, len(buf)))
@@ -525,10 +545,7 @@ class WH2300Station(object):
                0x02,
                WH2300Station.READ_RECORD,
                WH2300Station.READ_RECORD]
-        cnt = self.devh.interruptWrite(
-            self.USB_ENDPOINT_OUT,
-            buf,
-            self.timeout)
+        cnt = self.devh.interruptWrite(self.USB_ENDPOINT_OUT, buf, self.timeout)
         if cnt != len(buf):
             raise weewx.WeeWxIOError('read_record: bad interrupt write: '
                                      '%s != %s' % (cnt, len(buf)))
@@ -580,8 +597,7 @@ class WH2300Station(object):
         return self._read_record()
 
     def set_time(self):
-        # FIXME: implement set_time
-        raise NotImplementedError("set_time is not implemented")
+        self._time_sync(time.time())
 
     def clear_max_min(self):
         # FIXME: implement clear_max_min
@@ -595,95 +611,7 @@ class WH2300Station(object):
         # decode the memory starting at address 0x0, which contains the station
         # status and configuration info.  return the data as a dictionary.
         buf = self._read_eeprom(0x0000, 56)
-        data = dict()
-        data['eeprom'] = "0x%02x%02x" % (buf[0], buf[1]) # 0x55aa
-        data['model'] = "0x%02x%02x" % (buf[2], buf[3]) # 0x0023
-        data['version'] = "0x%02x" % buf[4] # 0x10
-        data['id'] = "0x%02x%02x%02x%02x" % (buf[5], buf[6], buf[7], buf[8])
-        for i in range(0, 8):
-            data['factory_unit_flag_1_bit%s' % i] = _get_bit(buf[0x09], i)
-        for i in range(0, 8):
-            data['factory_unit_flag_2_bit%s' % i] = _get_bit(buf[0x0a], i)
-        for i in range(0, 8):
-            data['option_1_bit%s' % i] = _get_bit(buf[0x0b], i)
-        for i in range(0, 8):
-            data['option_2_bit%s' % i] = _get_bit(buf[0x0c], i)
-        data['mode'] = 'ASK' if (buf[0x0c] & 0xf0) == 0xf0 else 'UART'
-        data['lux_to_rad_factor'] = (buf[0x0e] * 256 + buf[0x0d]) / 10.0
-        for i in range(0, 8):
-            data['unit_setting_flag_1_bit%s' % i] = _get_bit(buf[0x10], i)
-        for i in range(0, 8):
-            data['unit_setting_flag_2_bit%s' % i] = _get_bit(buf[0x11], i)
-        for i in range(0, 8):
-            data['display_setting_flag_1_bit%s' % i] = _get_bit(buf[0x12], i)
-        for i in range(0, 8):
-            data['display_setting_flag_2_bit%s' % i] = _get_bit(buf[0x13], i)
-        for i in range(0, 8):
-            data['display_setting_flag_3_bit%s' % i] = _get_bit(buf[0x14], i)
-        for i in range(0, 8):
-            data['alarm_enable_flag_1_bit%s' % i] = _get_bit(buf[0x15], i)
-        for i in range(0, 8):
-            data['alarm_enable_flag_2_bit%s' % i] = _get_bit(buf[0x16], i)
-        for i in range(0, 8):
-            data['alarm_enable_flag_3_bit%s' % i] = _get_bit(buf[0x17], i)
-        data['rain_season'] = buf[0x18] # month 1..12
-        data['interval'] = buf[0x1a] * 256 + buf[0x19] # seconds 8..14400 (240m)
-        data['lcd_contrast'] = "%s (0x%02x)" % (buf[0x1b]-0x16, buf[0x1b]) # 0x17..0x1f
-        data['timezone'] = _signed(buf[0x1c]) # -12..12
-        data['latitude'] = buf[0x1e] * 256 + buf[0x1d]
-        data['longitude'] = buf[0x20] * 256 + buf[0x1f]
-        data['weather'] = buf[0x21]
-        data['storm'] = buf[0x22]
-        data['offset_temperature_in'] = (buf[0x24] * 256 + buf[0x23]) / 10.0
-        data['offset_humidity_in'] = buf[0x25]
-        data['offset_temperature_out'] = (buf[0x27] * 256 + buf[0x26]) / 10.0
-        data['offset_humidity_out'] = buf[0x28]
-        data['offset_pressure_abs'] = (buf[0x2a] * 256 + buf[0x29]) / 10.0
-        data['offset_pressure_rel'] = (buf[0x2c] * 256 + buf[0x2b]) / 10.0
-        data['offset_wind_dir'] = buf[0x2e] * 256 + buf[0x2d]
-        data['coefficient_wind'] = buf[0x2f] / 100.0 # 0.1..2.5
-        data['coefficient_rain'] = buf[0x30] / 100.0 # 0.1..2.5
-        data['coefficient_light'] = (buf[0x32] * 256 + buf[0x31]) / 100.0 # 0.1..10.0
-        data['coefficient_uv'] = (buf[0x34] * 256 + buf[0x33]) / 100.0 # 0.1..10.0
-        return data
-
-    @staticmethod
-    def decode_history_record(raw):
-        # each record is 18 bytes
-        #
-        # NOTE: the docs specify values for invalid that do not make sense:
-        #  light: 0xfff specified, using 0xffffff
-        #  uv: 0xff specified, using 0xffff
-        #  wind_dir: 0x1f specified, using 0x1ff
-        data = dict()
-        if not raw:
-            logdbg("empty raw data")
-            return data
-        if len(raw) != 18:
-            logdbg("wrong number of bytes in raw data: %s != 18" % len(raw))
-            return data
-        x = ((raw[0] & 0x01) << 8) + raw[1]
-        data['wind_dir'] = None if x == 0x1ff else x # compass degree
-        x = (((raw[0] & 0x02) / 0x02) << 8) + raw[2]
-        data['wind_speed'] = None if x == 0x1ff else x / 10.0 # m/s
-        x = (((raw[0] & 0x04) / 0x04) << 8) + raw[3]
-        data['gust_speed'] = None if x == 0x1ff else x / 10.0 # m/s
-        data['rain_total'] = ((((raw[0] & 0x08) / 0x08) << 16) + (raw[5] << 8) + raw[4]) * 0.1 # 0.0-9999.9 mm
-        data['rain_overflow'] = (raw[0] & 0x10) / 0x10 # bit 4
-        data['no_sensors'] = (raw[0] & 0x80) / 0x80 # bit 7
-        data['humidity_in'] = None if raw[6] == 0xff else raw[6]
-        data['humidity_out'] = None if raw[7] == 0xff else raw[7]
-        x = ((raw[9] & 0x0f) << 8) + raw[8]
-        data['temperature_in'] = None if x == 0xfff else x / 10.0 - 40.0 # C
-        x = ((raw[9] & 0xf0) << 8) + raw[10]
-        data['temperature_out'] = None if x == 0xfff else x / 10.0 - 40.0 # C
-        x = (raw[11] << 8) + raw[12]
-        data['pressure'] = None if x == 0xffff else x / 10.0 # hpa
-        x = (raw[15] << 16) + (raw[14] << 8) + raw[13]
-        data['light'] = None if x == 0xffffff else x / 10.0 # 0.0-300000.0 lux
-        x = (raw[17] << 8) + raw[16]
-        data['uv'] = None if x == 0xffff else x / 1000.0 # 0-20000 W/m^2
-        return data
+        return self.decode_station_info(buf)
 
     # this map associates the item identifier with [label, num_bytes, function]
     # required for decoding weather data from raw bytes.
@@ -771,6 +699,98 @@ class WH2300Station(object):
             data[label] = obs
         return data
 
+    @staticmethod
+    def decode_history_record(raw):
+        # each record is 18 bytes
+        #
+        # NOTE: the docs specify values for invalid that do not make sense:
+        #  light: 0xfff specified, using 0xffffff
+        #  uv: 0xff specified, using 0xffff
+        #  wind_dir: 0x1f specified, using 0x1ff
+        data = dict()
+        if not raw:
+            logdbg("empty raw data")
+            return data
+        if len(raw) != 18:
+            logdbg("wrong number of bytes in raw data: %s != 18" % len(raw))
+            return data
+        x = ((raw[0] & 0x01) << 8) + raw[1]
+        data['wind_dir'] = None if x == 0x1ff else x # compass degree
+        x = (((raw[0] & 0x02) / 0x02) << 8) + raw[2]
+        data['wind_speed'] = None if x == 0x1ff else x / 10.0 # m/s
+        x = (((raw[0] & 0x04) / 0x04) << 8) + raw[3]
+        data['gust_speed'] = None if x == 0x1ff else x / 10.0 # m/s
+        data['rain_total'] = ((((raw[0] & 0x08) / 0x08) << 16) + (raw[5] << 8) + raw[4]) * 0.1 # 0.0-9999.9 mm
+        data['rain_overflow'] = (raw[0] & 0x10) / 0x10 # bit 4
+        data['no_sensors'] = (raw[0] & 0x80) / 0x80 # bit 7
+        data['humidity_in'] = None if raw[6] == 0xff else raw[6]
+        data['humidity_out'] = None if raw[7] == 0xff else raw[7]
+        x = ((raw[9] & 0x0f) << 8) + raw[8]
+        data['temperature_in'] = None if x == 0xfff else x / 10.0 - 40.0 # C
+        x = ((raw[9] & 0xf0) << 8) + raw[10]
+        data['temperature_out'] = None if x == 0xfff else x / 10.0 - 40.0 # C
+        x = (raw[11] << 8) + raw[12]
+        data['pressure'] = None if x == 0xffff else x / 10.0 # hpa
+        x = (raw[15] << 16) + (raw[14] << 8) + raw[13]
+        data['light'] = None if x == 0xffffff else x / 10.0 # 0.0-300000.0 lux
+        x = (raw[17] << 8) + raw[16]
+        data['uv'] = None if x == 0xffff else x / 1000.0 # 0-20000 W/m^2
+        return data
+
+    @staticmethod
+    def decode_station_info(raw):
+        data = dict()
+        data['eeprom'] = "0x%02x%02x" % (raw[0], raw[1]) # 0x55aa
+        data['model'] = "0x%02x%02x" % (raw[2], raw[3]) # 0x0023
+        data['version'] = "0x%02x" % raw[4] # 0x10
+        data['id'] = "0x%02x%02x%02x%02x" % (raw[5], raw[6], raw[7], raw[8])
+        for i in range(0, 8):
+            data['factory_unit_flag_1_bit%s' % i] = _get_bit(raw[0x09], i)
+        for i in range(0, 8):
+            data['factory_unit_flag_2_bit%s' % i] = _get_bit(raw[0x0a], i)
+        for i in range(0, 8):
+            data['option_1_bit%s' % i] = _get_bit(raw[0x0b], i)
+        for i in range(0, 8):
+            data['option_2_bit%s' % i] = _get_bit(raw[0x0c], i)
+        data['mode'] = 'ASK' if (raw[0x0c] & 0xf0) == 0xf0 else 'UART'
+        data['lux_to_rad_factor'] = (raw[0x0e] * 256 + raw[0x0d]) / 10.0
+        for i in range(0, 8):
+            data['unit_setting_flag_1_bit%s' % i] = _get_bit(raw[0x10], i)
+        for i in range(0, 8):
+            data['unit_setting_flag_2_bit%s' % i] = _get_bit(raw[0x11], i)
+        for i in range(0, 8):
+            data['display_setting_flag_1_bit%s' % i] = _get_bit(raw[0x12], i)
+        for i in range(0, 8):
+            data['display_setting_flag_2_bit%s' % i] = _get_bit(raw[0x13], i)
+        for i in range(0, 8):
+            data['display_setting_flag_3_bit%s' % i] = _get_bit(raw[0x14], i)
+        for i in range(0, 8):
+            data['alarm_enable_flag_1_bit%s' % i] = _get_bit(raw[0x15], i)
+        for i in range(0, 8):
+            data['alarm_enable_flag_2_bit%s' % i] = _get_bit(raw[0x16], i)
+        for i in range(0, 8):
+            data['alarm_enable_flag_3_bit%s' % i] = _get_bit(raw[0x17], i)
+        data['rain_season'] = raw[0x18] # month 1..12
+        data['interval'] = raw[0x1a] * 256 + raw[0x19] # seconds 8..14400 (240m)
+        data['lcd_contrast'] = "%s (0x%02x)" % (raw[0x1b]-0x16, raw[0x1b]) # 0x17..0x1f
+        data['timezone'] = _signed(raw[0x1c]) # -12..12
+        data['latitude'] = raw[0x1e] * 256 + raw[0x1d]
+        data['longitude'] = raw[0x20] * 256 + raw[0x1f]
+        data['weather'] = raw[0x21]
+        data['storm'] = raw[0x22]
+        data['offset_temperature_in'] = (raw[0x24] * 256 + raw[0x23]) / 10.0
+        data['offset_humidity_in'] = raw[0x25]
+        data['offset_temperature_out'] = (raw[0x27] * 256 + raw[0x26]) / 10.0
+        data['offset_humidity_out'] = raw[0x28]
+        data['offset_pressure_abs'] = (raw[0x2a] * 256 + raw[0x29]) / 10.0
+        data['offset_pressure_rel'] = (raw[0x2c] * 256 + raw[0x2b]) / 10.0
+        data['offset_wind_dir'] = raw[0x2e] * 256 + raw[0x2d]
+        data['coefficient_wind'] = raw[0x2f] / 100.0 # 0.1..2.5
+        data['coefficient_rain'] = raw[0x30] / 100.0 # 0.1..2.5
+        data['coefficient_light'] = (raw[0x32] * 256 + raw[0x31]) / 100.0 # 0.1..10.0
+        data['coefficient_uv'] = (raw[0x34] * 256 + raw[0x33]) / 100.0 # 0.1..10.0
+        return data
+
 
 # define a main entry point for basic testing of the station.  invoke this as
 # follows from the weewx root dir:
@@ -779,6 +799,9 @@ class WH2300Station(object):
 
 if __name__ == '__main__':
 
+    INFO_DATA = [
+        "55 aa 00 23 10 bc 7a 28 28 52 a2 01 02 f3 04 ff 53 a2 01 4a b2 00 00 00 01 2c 01 1b fb 00 00 00 00 03 04 00 00 00 00 00 00 00 00 c3 ff 00 00 64 64 64 00 64 00 ff ff ff 6b",
+        ]
     CURRENT_DATA = [
         "01 02 8f 02 02 13 03 02 11 04 02 13 05 02 13 06 32 07 63 08 27 f0 09 27 b2 0a 00 5a 0b 00 2b 0c 00 3b 0e 00 00 00 00 10 00 00 00 75 11 00 00 00 a2 12 00 00 00 75 13 00 00 04 c5 14 00 00 04 c5 15 00 ff ff ff 16 ff ff 17 ff",
         "01 02 90 02 02 13 03 02 11 04 02 13 05 02 13 06 32 07 63 08 27 f0 09 27 b2 0a 00 5a 0b 00 17 0c 00 21 0e 00 00 00 00 10 00 00 00 75 11 00 00 00 a2 12 00 00 00 75 13 00 00 04 c5 14 00 00 04 c5 15 00 ff ff ff 16 ff ff 17 ff",
@@ -808,7 +831,7 @@ if __name__ == '__main__':
     parser.add_option('--debug', dest='debug', action='store_true',
                       help='display diagnostic information while running')
     parser.add_option('--action', dest='action', default='current',
-                      help='actions include: eeprom, eeprom-all, current, test-decode-current, test-decode-history, dump')
+                      help='actions include: info, info-all, current, test-decode-info, test-decode-current, test-decode-history, dump')
     (options, args) = parser.parse_args()
 
     if options.version:
@@ -818,27 +841,37 @@ if __name__ == '__main__':
     if options.debug:
         syslog.setlogmask(syslog.LOG_UPTO(syslog.LOG_DEBUG))
 
-    if options.action == 'eeprom':
+    if options.action == 'info':
         with WH2300Station() as s:
             print_info(s.get_station_info(), CORE_PARAMETERS)
-    elif options.action == 'eeprom-all':
+    elif options.action == 'info-all':
         with WH2300Station() as s:
             print_info(s.get_station_info())
-    elif options.action == 'test-decode-current':
-        for row in CURRENT_DATA:
-            raw = [int(x, 16) for x in row.split()]
-            print WH2300Station.decode_weather_data(raw)
     elif options.action == 'current':
         with WH2300Station() as s:
             while True:
                 raw = s.get_current()
                 if options.debug:
-                    print "raw:", _fmt(raw)
+                    print _fmt(raw)
                 print WH2300Station.decode_weather_data(raw)
                 time.sleep(5)
+    elif options.action == 'sync-time':
+        with WH2300Station() as s:
+            s.set_time()
+    elif options.action == 'test-decode-info':
+        for row in INFO_DATA:
+            raw = [int(x, 16) for x in row.split()]
+            print _fmt(raw)
+            print WH2300Station.decode_station_info(raw)
+    elif options.action == 'test-decode-current':
+        for row in CURRENT_DATA:
+            raw = [int(x, 16) for x in row.split()]
+            print _fmt(raw)
+            print WH2300Station.decode_weather_data(raw)
     elif options.action == 'test-decode-history':
         for row in HISTORY_DATA:
             raw = [int(x, 16) for x in row.split()]
+            print _fmt(raw)
             print WH2300Station.decode_history_record(raw)
     elif options.action == 'eeprom-time':
         with WH2300Station() as s:
@@ -849,5 +882,16 @@ if __name__ == '__main__':
                 raw[5] + raw[6] * 256)
     elif options.action == 'dump':
         with WH2300Station() as s:
-            for i in range(0, 128, 64):
-                print i, _fmt(s._read_eeprom(i, 64))
+            size = 0x20
+            for i in range(0x0000, 0xffff, size):
+                for n in range(0, 3):
+                    try:
+                        raw = s._read_eeprom(i, 0x20)
+                        print "%04x" % i, _fmt(raw[:size])
+                        break
+                    except Exception, e:
+                        print "failed read %d of 3 for 0x%04x: %s" % (n+1, i, e)
+                        print "waiting 3 seconds before retry"
+                        time.sleep(3)
+                else:
+                    raise Exception("retries failed")
