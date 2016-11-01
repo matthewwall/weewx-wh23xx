@@ -903,7 +903,7 @@ if __name__ == '__main__':
             raw = s._read_eeprom(0x02c8, 8)
             print _fmt(raw[0:8])
             print "%04d.%02d.%02d %02d:%02d %ss" % (
-                2xx0 + raw[0], raw[1], raw[2], raw[3], raw[4],
+                2000 + raw[0], raw[1], raw[2], raw[3], raw[4],
                 raw[5] + raw[6] * 256)
     elif options.action == 'dump':
         with WH23xxStation() as s:
