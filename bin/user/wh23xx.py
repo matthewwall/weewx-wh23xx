@@ -6,7 +6,7 @@
 # FIXME: this should be called wh23xx
 
 """
-Collect data from Fine Offset WH2300 stations, including:
+Collect data from Fine Offset WH23xx stations, including:
 
   WH2300 (with RCC)
   WH2301 (no RCC)
@@ -218,18 +218,18 @@ import weewx.drivers
 from weeutil.weeutil import timestamp_to_string
 from weewx.wxformulas import calculate_rain
 
-DRIVER_NAME = 'WH2300'
-DRIVER_VERSION = '0.4'
+DRIVER_NAME = 'WH23xx'
+DRIVER_VERSION = '0.5'
 
 def loader(config_dict, _):
-    return WH2300Driver(**config_dict[DRIVER_NAME])
+    return WH23xxDriver(**config_dict[DRIVER_NAME])
 
 def confeditor_loader():
-    return WH2300ConfigurationEditor()
+    return WH23xxConfigurationEditor()
 
 
 def logmsg(level, msg):
-    syslog.syslog(level, 'wh2300: %s' % msg)
+    syslog.syslog(level, 'wh23xx: %s' % msg)
 
 def logdbg(msg):
     logmsg(syslog.LOG_DEBUG, msg)
@@ -276,31 +276,31 @@ def _signed(x):
     return v
 
 
-class WH2300ConfigurationEditor(weewx.drivers.AbstractConfEditor):
+class WH23xxConfigurationEditor(weewx.drivers.AbstractConfEditor):
     @property
     def default_stanza(self):
         return """
-[WH2300]
-    # This section is for Fine Offset WH2300 stations
+[WH23xx]
+    # This section is for Fine Offset WH23xx stations
 
     # The model name such as Tycon, or TP2700
     model = Tycon TP2700
 
     # The driver to use
-    driver = user.wh2300
+    driver = user.wh23xx
 """
 
 
-class WH2300Driver(weewx.drivers.AbstractDevice):
+class WH23xxDriver(weewx.drivers.AbstractDevice):
     def __init__(self, **stn_dict):
         loginf('driver version is %s' % DRIVER_VERSION)
         self._model = stn_dict.get('model', 'Tycon TP2700')
         self._poll_interval = int(stn_dict.get('poll_interval', 15))
         loginf('poll interval is %s' % self._poll_interval)
-        max_tries = int(stn_dict.get('max_tries', 10))
-        retry_wait = int(stn_dict.get('retry_wait', 10))
+        self.max_tries = int(stn_dict.get('max_tries', 5))
+        self.retry_wait = int(stn_dict.get('retry_wait', 10))
         self.last_rain = None
-        self._station = WH2300Station()
+        self._station = WH23xxStation()
         self._station.open()
 
     def closePort(self):
@@ -311,15 +311,33 @@ class WH2300Driver(weewx.drivers.AbstractDevice):
 
     def genLoopPackets(self):
         while True:
-            raw = self._station.get_current()
+            raw = self._get_current()
             logdbg("raw data: %s" % raw)
             if raw:
-                decoded = WH2300Station.decode_weather_data(raw)
+                decoded = WH23xxStation.decode_weather_data(raw)
                 logdbg("decoded data: %s" % decoded)
                 packet = self._data_to_packet(decoded)
                 logdbg("packet: %s" % packet)
                 yield packet
             time.sleep(self._poll_interval)
+
+    def _get_current(self):
+        ntries = 0
+        while ntries < self.max_tries:
+            ntries += 1
+            try:
+                return self._station.get_current()
+            except usb.USBError, e:
+                errmsg = repr(e)
+                if 'No data available' in errmsg or 'No error' in errmsg:
+                    ntries -= 1
+                else:
+                    logerr("read: failed attempt %d of %d: %s" %
+                           (ntries, self.max_tries, e))
+                time.sleep(self.retry_wait)
+        msg = "read failed: max retries (%d) exceeded" % self.max_tries
+        logerr(msg)
+        raise weewx.RetriesExceeded(msg)
 
     def _data_to_packet(self, data):
         # convert from the dictionary-of-dictionaries to a simple dictionary
@@ -343,7 +361,7 @@ class WH2300Driver(weewx.drivers.AbstractDevice):
         return pkt
 
 
-class WH2300Station(object):
+class WH23xxStation(object):
     # usb values obtained from 'sudo lsusb -v'
     USB_ENDPOINT_IN = 0x82
     USB_ENDPOINT_OUT = 0x02
@@ -493,13 +511,10 @@ class WH2300Station(object):
             raise weewx.WeeWxIOError('%s: bad write length=%s for command %s' %
                                      (label, cnt, _fmt(buf)))
 
-    def _read(self):
-        return None
-
     def _time_sync(self, ts):
         logdbg("time sync to %s (%s)" % (ts, timestamp_to_string(ts)))
         t = time.localtime(ts)
-        cmd = [WH2300Station.TIME_SYNC,
+        cmd = [WH23xxStation.TIME_SYNC,
                t.tm_year - 2000, t.tm_mon, t.tm_mday,
                t.tm_hour, t.tm_min, t.tm_sec, 0]
         chksum = _calc_checksum(cmd)
@@ -512,7 +527,7 @@ class WH2300Station(object):
         # initiate a read by sending the READ_EEPROM command.
         addr_lo = addr & 0xff
         addr_hi = (addr / 256) & 0xff
-        cmd = [WH2300Station.READ_EEPROM, addr_lo, addr_hi, size]
+        cmd = [WH23xxStation.READ_EEPROM, addr_lo, addr_hi, size]
         chksum = _calc_checksum(cmd)
         buf = [0x02, 0x05]
         buf.extend(cmd)
@@ -527,20 +542,20 @@ class WH2300Station(object):
         if not buf:
             raise weewx.WeeWxIOError('read_eeprom failed: empty read')
         logdbg("read_eeprom: buf: %s" % _fmt(buf))
-        if buf[0] != 0x01 or buf[2] != WH2300Station.READ_EEPROM:
+        if buf[0] != 0x01 or buf[2] != WH23xxStation.READ_EEPROM:
             raise weewx.WeeWxIOError('read_eeprom: bad reply: '
                                      'got %02x %02x %02x %02x, '
                                      'exp 01 .. %02x ..' %
                                      (buf[0], buf[1], buf[2], buf[3],
-                                      WH2300Station.READ_EEPROM))
+                                      WH23xxStation.READ_EEPROM))
         logdbg("size: %s" % buf[3])
         return buf[4:]
 
     def _read_record(self):
         # initiate a read by sending the READ_RECORD command.
         buf = [0x02, 0x02,
-               WH2300Station.READ_RECORD,
-               WH2300Station.READ_RECORD]
+               WH23xxStation.READ_RECORD,
+               WH23xxStation.READ_RECORD]
         self._write("read_record", buf)
 
         # now do the actual read.  the station should respond with a single
@@ -561,10 +576,10 @@ class WH2300Station(object):
         if buf[0] != 0x01:
             raise weewx.WeeWxIOError('read_record: bad first byte: '
                                      '0x%02x != 0x01' % buf[0])
-        if buf[2] != WH2300Station.READ_RECORD:
+        if buf[2] != WH23xxStation.READ_RECORD:
             raise weewx.WeeWxIOError('read_record: missing READ_RECORD: '
                                      '0x%02x != 0x%02x' %
-                                     (buf[2], WH2300Station.READ_RECORD))
+                                     (buf[2], WH23xxStation.READ_RECORD))
         record_size = buf[3]
         logdbg("record_size: %s" % record_size)
         tmp.extend(buf[4:]) # skip 0x01, payload_size, 0x04, record_size
@@ -579,7 +594,7 @@ class WH2300Station(object):
         rbuf = tmp[0:record_size] # prune off any dangling bytes
 
         # verify the checksum for the record
-        tmp = [WH2300Station.READ_RECORD, record_size]
+        tmp = [WH23xxStation.READ_RECORD, record_size]
         tmp.extend(rbuf)
         chksum = _calc_checksum(tmp)
         logdbg("read_record: rbuf: %s chksum=0x%02x" %
@@ -589,16 +604,16 @@ class WH2300Station(object):
     def _clear_max_min(self):
         logdbg("clear max/min")
         buf = [0x02, 0x02,
-               WH2300Station.CLEAR_MAX_MIN_DAY,
-               WH2300Station.CLEAR_MAX_MIN_DAY]
+               WH23xxStation.CLEAR_MAX_MIN_DAY,
+               WH23xxStation.CLEAR_MAX_MIN_DAY]
         self._write("clear_max_min", buf)
         logdbg("max/min cleared")
 
     def _clear_history(self):
         logdbg("clear history")
         buf = [0x02, 0x02,
-               WH2300Station.CLEAR_HISTORY,
-               WH2300Station.CLEAR_HISTORY]
+               WH23xxStation.CLEAR_HISTORY,
+               WH23xxStation.CLEAR_HISTORY]
         self._write("clear_history", buf)
         logdbg("history cleared")
 
@@ -665,17 +680,17 @@ class WH2300Station(object):
             item = item_raw = raw[i]
             i += 1
 
-            has_date = (item & WH2300Station.ITEM_DATE) != 0
-            has_time = (item & WH2300Station.ITEM_TIME) != 0
+            has_date = (item & WH23xxStation.ITEM_DATE) != 0
+            has_time = (item & WH23xxStation.ITEM_TIME) != 0
 
             if has_date:
-                item = item & ~WH2300Station.ITEM_DATE
+                item = item & ~WH23xxStation.ITEM_DATE
             if has_time:
-                item = item & ~WH2300Station.ITEM_TIME
+                item = item & ~WH23xxStation.ITEM_TIME
 
             label = None
             obs = dict()
-            mapping = WH2300Station.ITEM_MAPPING.get(item)
+            mapping = WH23xxStation.ITEM_MAPPING.get(item)
             if mapping:
                 # bytes are decoded MSB first, then function is applied
                 label = mapping[0]
@@ -698,7 +713,7 @@ class WH2300Station(object):
                 i += 2
 
             # workaround firmware bug for invalid light value
-            if (item == WH2300Station.ITEM_LIGHT and
+            if (item == WH23xxStation.ITEM_LIGHT and
                 obs['value'] == 0xffffff / 10.0):
                 obs['value'] = None
 
@@ -802,7 +817,7 @@ class WH2300Station(object):
 # define a main entry point for basic testing of the station.  invoke this as
 # follows from the weewx root dir:
 #
-# PYTHONPATH=bin python bin/user/wh2300.py
+# PYTHONPATH=bin python bin/user/wh23xx.py
 
 if __name__ == '__main__':
 
@@ -830,7 +845,7 @@ if __name__ == '__main__':
 
     usage = """%prog [options] [--debug] [--help]"""
 
-    syslog.openlog('wh2300', syslog.LOG_PID | syslog.LOG_CONS)
+    syslog.openlog('wh23xx', syslog.LOG_PID | syslog.LOG_CONS)
     syslog.setlogmask(syslog.LOG_UPTO(syslog.LOG_INFO))
     parser = optparse.OptionParser(usage=usage)
     parser.add_option('--version', dest='version', action='store_true',
@@ -849,49 +864,49 @@ if __name__ == '__main__':
         syslog.setlogmask(syslog.LOG_UPTO(syslog.LOG_DEBUG))
 
     if options.action == 'info':
-        with WH2300Station() as s:
+        with WH23xxStation() as s:
             print_info(s.get_station_info(), CORE_PARAMETERS)
     elif options.action == 'info-all':
-        with WH2300Station() as s:
+        with WH23xxStation() as s:
             print_info(s.get_station_info())
     elif options.action == 'current':
-        with WH2300Station() as s:
+        with WH23xxStation() as s:
             while True:
                 raw = s.get_current()
                 if options.debug:
                     print _fmt(raw)
-                print WH2300Station.decode_weather_data(raw)
+                print WH23xxStation.decode_weather_data(raw)
                 time.sleep(5)
     elif options.action == 'sync-time':
-        with WH2300Station() as s:
+        with WH23xxStation() as s:
             s.sync_time()
     elif options.action == 'clear-history':
-        with WH2300Station() as s:
+        with WH23xxStation() as s:
             s.clear_history()
     elif options.action == 'test-decode-info':
         for row in INFO_DATA:
             raw = [int(x, 16) for x in row.split()]
             print _fmt(raw)
-            print WH2300Station.decode_station_info(raw)
+            print WH23xxStation.decode_station_info(raw)
     elif options.action == 'test-decode-current':
         for row in CURRENT_DATA:
             raw = [int(x, 16) for x in row.split()]
             print _fmt(raw)
-            print WH2300Station.decode_weather_data(raw)
+            print WH23xxStation.decode_weather_data(raw)
     elif options.action == 'test-decode-history':
         for row in HISTORY_DATA:
             raw = [int(x, 16) for x in row.split()]
             print _fmt(raw)
-            print WH2300Station.decode_history_record(raw)
+            print WH23xxStation.decode_history_record(raw)
     elif options.action == 'eeprom-time':
-        with WH2300Station() as s:
+        with WH23xxStation() as s:
             raw = s._read_eeprom(0x02c8, 8)
             print _fmt(raw[0:8])
             print "%04d.%02d.%02d %02d:%02d %ss" % (
-                2000 + raw[0], raw[1], raw[2], raw[3], raw[4],
+                2xx0 + raw[0], raw[1], raw[2], raw[3], raw[4],
                 raw[5] + raw[6] * 256)
     elif options.action == 'dump':
-        with WH2300Station() as s:
+        with WH23xxStation() as s:
             size = 0x20
             for i in range(0x0000, 0xffff, size):
                 for n in range(0, 3):

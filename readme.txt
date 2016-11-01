@@ -1,6 +1,6 @@
-weewx-wh2300
+weewx-wh23xx
 
-This is a weewx driver for Fine Offset WH2300 hardware.  These stations are
+This is a weewx driver for Fine Offset WH23xx hardware.  These stations are
 commonly available as Tycon TP2700 weather stations.
 
 Installation
@@ -11,11 +11,11 @@ dpkg -i weewx_x.y.z-r.deb
 
 1) download the driver
 
-wget -O weewx-wh2300.zip https://github.com/matthewwall/weewx-wh2300/archive/master.zip
+wget -O weewx-wh23xx.zip https://github.com/matthewwall/weewx-wh23xx/archive/master.zip
 
 2) install the driver
 
-wee_extension --install weewx-wh2300.zip
+wee_extension --install weewx-wh23xx.zip
 
 3) configure the driver
 
