@@ -694,8 +694,8 @@ class WH23xxStation(object):
             if mapping:
                 if i + mapping[1] - 1 >= len(raw):
                     raise weewx.WeeWxIOError(
-                        "no bytes for %s: idx=%s numbytes=%s bytes=%s" %
-                        (mapping[0], i, mapping[1], raw))
+                        "not enough bytes for %s: idx=%s numbytes=%s bytes=%s"
+                        % (mapping[0], i, mapping[1], raw))
                 # bytes are decoded MSB first, then function is applied
                 label = mapping[0]
                 obs['value'] = _decode_bytes(raw, i, mapping[1], mapping[2])
