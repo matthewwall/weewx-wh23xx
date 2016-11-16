@@ -1,3 +1,6 @@
+0.6 16nov2016
+* avoid index overrun
+
 0.5 31oct2016
 * implemented retries with retry wait
 * change name to wh23xx

@@ -219,7 +219,7 @@ from weeutil.weeutil import timestamp_to_string
 from weewx.wxformulas import calculate_rain
 
 DRIVER_NAME = 'WH23xx'
-DRIVER_VERSION = '0.5'
+DRIVER_VERSION = '0.6'
 
 def loader(config_dict, _):
     return WH23xxDriver(**config_dict[DRIVER_NAME])
@@ -692,13 +692,17 @@ class WH23xxStation(object):
             obs = dict()
             mapping = WH23xxStation.ITEM_MAPPING.get(item)
             if mapping:
+                if i + mapping[1] - 1 >= len(raw):
+                    raise weewx.WeeWxIOError(
+                        "no bytes for %s: idx=%s numbytes=%s bytes=%s" %
+                        (mapping[0], i, mapping[1], raw))
                 # bytes are decoded MSB first, then function is applied
                 label = mapping[0]
                 obs['value'] = _decode_bytes(raw, i, mapping[1], mapping[2])
                 i += mapping[1]
             else:
-                logdbg("no mapping for item id 0x%02x (0x%02x)"
-                       " at index %s of %s" % (item, item_raw, i, _fmt(raw)))
+                logerr("no mapping for item id 0x%02x (0x%02x)"
+                       " at index %s of %s" % (item, item_raw, i-1, _fmt(raw)))
                 raise weewx.WeeWxIOError("no mapping for id 0x%02x" % item)
 
             if has_date:
