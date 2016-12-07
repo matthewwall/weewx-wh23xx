@@ -1,3 +1,6 @@
+0.7 07dec2016
+* log index out of range on corrupt data
+
 0.6 16nov2016
 * avoid index overrun
 

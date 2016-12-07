@@ -215,11 +215,11 @@ import time
 import usb
 
 import weewx.drivers
-from weeutil.weeutil import timestamp_to_string
+from weeutil.weeutil import timestamp_to_string, log_traceback
 from weewx.wxformulas import calculate_rain
 
 DRIVER_NAME = 'WH23xx'
-DRIVER_VERSION = '0.6'
+DRIVER_VERSION = '0.7'
 
 def loader(config_dict, _):
     return WH23xxDriver(**config_dict[DRIVER_NAME])
@@ -314,11 +314,15 @@ class WH23xxDriver(weewx.drivers.AbstractDevice):
             raw = self._get_current()
             logdbg("raw data: %s" % raw)
             if raw:
-                decoded = WH23xxStation.decode_weather_data(raw)
-                logdbg("decoded data: %s" % decoded)
-                packet = self._data_to_packet(decoded)
-                logdbg("packet: %s" % packet)
-                yield packet
+                try:
+                    decoded = WH23xxStation.decode_weather_data(raw)
+                    logdbg("decoded data: %s" % decoded)
+                    packet = self._data_to_packet(decoded)
+                    logdbg("packet: %s" % packet)
+                    yield packet
+                except IndexError, e:
+                    logerr("decode failed: %s (%s)" % (e, _fmt(raw)))
+                    log_traceback(loglevel=syslog.LOG_DEBUG)
             time.sleep(self._poll_interval)
 
     def _get_current(self):
