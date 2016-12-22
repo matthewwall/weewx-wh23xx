@@ -1,3 +1,7 @@
+0.8 22dec2016
+* provide more debug logging when generating LOOP data
+* make 'no data available' check work in additional locales
+
 0.7 07dec2016
 * log index out of range on corrupt data
 

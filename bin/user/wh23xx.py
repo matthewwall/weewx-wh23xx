@@ -1,9 +1,8 @@
 #!/usr/bin/env python
 # Copyright 2016 Matthew Wall, all rights reserved
+# Distributed under the terms of the GPLv3
 #
 # Thanks to Lloyd Kinsella
-
-# FIXME: this should be called wh23xx
 
 """
 Collect data from Fine Offset WH23xx stations, including:
@@ -219,7 +218,7 @@ from weeutil.weeutil import timestamp_to_string, log_traceback
 from weewx.wxformulas import calculate_rain
 
 DRIVER_NAME = 'WH23xx'
-DRIVER_VERSION = '0.7'
+DRIVER_VERSION = '0.8'
 
 def loader(config_dict, _):
     return WH23xxDriver(**config_dict[DRIVER_NAME])
@@ -275,6 +274,30 @@ def _signed(x):
         v *= -1
     return v
 
+KNOWN_USB_MESSAGES = [
+    'No data available', 'No error',
+    'Nessun dato disponibile', 'Nessun errore',
+    'Keine Daten verfügbar',
+    'No hay datos disponibles',
+    'Pas de données disponibles'
+    ]
+
+# these are the usb 'errors' that should be ignored
+def known_usb_err(e):
+    errmsg = repr(e)
+    for msg in KNOWN_USB_MESSAGES:
+        if msg in errmsg:
+            return True
+    return False
+
+def get_usb_info():
+    pyusb_version = '0.4.x'
+    try:
+        pyusb_version = usb.__version__
+    except AttributeError:
+        pass
+    return "pyusb_version=%s" % pyusb_version
+
 
 class WH23xxConfigurationEditor(weewx.drivers.AbstractConfEditor):
     @property
@@ -294,6 +317,7 @@ class WH23xxConfigurationEditor(weewx.drivers.AbstractConfEditor):
 class WH23xxDriver(weewx.drivers.AbstractDevice):
     def __init__(self, **stn_dict):
         loginf('driver version is %s' % DRIVER_VERSION)
+        loginf('usb info: %s' % get_usb_info())
         self._model = stn_dict.get('model', 'Tycon TP2700')
         self._poll_interval = int(stn_dict.get('poll_interval', 15))
         loginf('poll interval is %s' % self._poll_interval)
@@ -332,13 +356,13 @@ class WH23xxDriver(weewx.drivers.AbstractDevice):
             try:
                 return self._station.get_current()
             except usb.USBError, e:
-                errmsg = repr(e)
-                if 'No data available' in errmsg or 'No error' in errmsg:
+                if known_usb_err(e):
+                    logdbg("get_current: %s" % e)
                     ntries -= 1
                 else:
-                    logerr("read: failed attempt %d of %d: %s" %
+                    logerr("get_current: failed attempt %d of %d: %s" %
                            (ntries, self.max_tries, e))
-                time.sleep(self.retry_wait)
+            time.sleep(self.retry_wait)
         msg = "read failed: max retries (%d) exceeded" % self.max_tries
         logerr(msg)
         raise weewx.RetriesExceeded(msg)
@@ -494,7 +518,8 @@ class WH23xxStation(object):
             try:
                 self.devh.reset()
                 break
-            except usb.USBError:
+            except usb.USBError, e:
+                logdbg("usb reset failed: %s" % e)
                 time.sleep(2)
 
     @staticmethod
