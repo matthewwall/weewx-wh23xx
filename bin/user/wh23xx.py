@@ -26,6 +26,17 @@ a scale of 1-15 (labelled as UVI).
 
 The data logger in the console retains data through a power cycle.
 
+Sensor specifications:
+  temperature: -40 to 60C
+  humidity: 1 to 99%
+  wind speed: 0 to 50 m/s
+  wind direction: 0 to 359 degree
+  rainfall: 0 to 9999.9 mm
+  light: 0 to 300000 lux
+  UVI: 0 to 15 (0 to 20000 W/m^2)
+  pressure: 300-1100 hPa
+
+===============================================================================
 Current data include the following:
 
   in temperature
@@ -52,6 +63,7 @@ Current data include the following:
   uv (radiation)
   uv index
 
+===============================================================================
 Historical records include the following:
 
   wind direction
@@ -69,6 +81,7 @@ Historical records include the following:
 The station has 3552 records.  Each record is 18 bytes.  The timestamp for each
 record is stored separately from the record.
 
+===============================================================================
 Memory Map
 
 0x0000 to 0x0258 : system, max/min, alarms, etc
@@ -90,6 +103,7 @@ each 8-byte segment is a timestamp
 0x0640 to 0xffff : records
 each record is 18 bytes
 
+===============================================================================
 Decoding current weather data
 
 Temperature is value + 40C
@@ -99,6 +113,7 @@ For 1 byte word, 0xff indicates invalid
 For 2 byte word, 0xffff indicates invalid
 For 4 byte word, 0xffffffff indicates invalid
 
+===============================================================================
 Commands
 
 TIME_SYNC         0x01    [0x02 0x09]
