@@ -592,7 +592,7 @@ class WH23xxStation(object):
                                      'exp 01 .. %02x ..' %
                                      (buf[0], buf[1], buf[2], buf[3],
                                       WH23xxStation.READ_EEPROM))
-        logdbg("size: %s" % buf[3])
+        logdbg("read_eeprom: size: %s" % buf[3])
         return buf[4:]
 
     def _read_record(self):
@@ -625,7 +625,7 @@ class WH23xxStation(object):
                                      '0x%02x != 0x%02x' %
                                      (buf[2], WH23xxStation.READ_RECORD))
         record_size = buf[3]
-        logdbg("record_size: %s" % record_size)
+        logdbg("read_record: record_size: %s" % record_size)
         tmp.extend(buf[4:]) # skip 0x01, payload_size, 0x04, record_size
         while len(tmp) < record_size:
             # FIXME: prevent infinite loop
