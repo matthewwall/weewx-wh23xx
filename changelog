@@ -1,3 +1,7 @@
+0.9 31dec2016
+* added logging to diagnose possible infinite loop
+* avoid possible infinite loop
+
 0.8 22dec2016
 * provide more debug logging when generating LOOP data
 * make 'no data available' check work in additional locales

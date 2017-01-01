@@ -233,7 +233,7 @@ from weeutil.weeutil import timestamp_to_string, log_traceback
 from weewx.wxformulas import calculate_rain
 
 DRIVER_NAME = 'WH23xx'
-DRIVER_VERSION = '0.8'
+DRIVER_VERSION = '0.9'
 
 def loader(config_dict, _):
     return WH23xxDriver(**config_dict[DRIVER_NAME])
@@ -549,8 +549,9 @@ class WH23xxStation(object):
         return None
 
     def _write(self, label, buf):
-        logdbg("%s: cmdbuf: %s" % (label, _fmt(buf)))
+        logdbg("%s: write: %s" % (label, _fmt(buf)))
         cnt = self.devh.interruptWrite(self.USB_ENDPOINT_OUT, buf, self.timeout)
+        logerr("%s: wrote %s bytes" % (label, len(buf))) # FIXME: remove this
         if cnt != len(buf):
             raise weewx.WeeWxIOError('%s: bad write length=%s for command %s' %
                                      (label, cnt, _fmt(buf)))
@@ -601,6 +602,7 @@ class WH23xxStation(object):
                WH23xxStation.READ_RECORD,
                WH23xxStation.READ_RECORD]
         self._write("read_record", buf)
+        logerr("read_record: write complete") # FIXME: remove this
 
         # now do the actual read.  the station should respond with a single
         # READ_RECORD response spread over (probably) multiple USB packets.
@@ -610,11 +612,13 @@ class WH23xxStation(object):
         # reply data, and a checksum.
         tmp = []
         record_size = 0
+        logerr("read_record: do interrupt read") # FIXME: remove this
         buf = self.devh.interruptRead(
             self.USB_ENDPOINT_IN,
             self.USB_PACKET_SIZE,
             self.timeout)
         if not buf:
+            logdbg("read_record: empty read")
             return None
         logdbg("read_record: buf: %s" % _fmt(buf))
         if buf[0] != 0x01:
@@ -627,14 +631,18 @@ class WH23xxStation(object):
         record_size = buf[3]
         logdbg("read_record: record_size: %s" % record_size)
         tmp.extend(buf[4:]) # skip 0x01, payload_size, 0x04, record_size
-        while len(tmp) < record_size:
-            # FIXME: prevent infinite loop
+        cnt = 0
+        max_cnt = 20
+        while len(tmp) < record_size and cnt < max_cnt:
+            cnt += 1
             buf = self.devh.interruptRead(
                 self.USB_ENDPOINT_IN,
                 self.USB_PACKET_SIZE,
                 self.timeout)
             logdbg("read_record: buf: %s" % _fmt(buf))
             tmp.extend(buf[2:]) # skip 0x01 and payload_size
+        if cnt >= max_cnt:
+            raise weewx.WeeWxIOError("read_record: suspicious packets")
         rbuf = tmp[0:record_size] # prune off any dangling bytes
 
         # verify the checksum for the record
