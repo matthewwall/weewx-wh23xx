@@ -558,7 +558,6 @@ class WH23xxStation(object):
     def _write(self, label, buf):
         logdbg("%s: write: %s" % (label, _fmt(buf)))
         cnt = self.devh.interruptWrite(self.USB_ENDPOINT_OUT, buf, self.timeout)
-        logerr("%s: wrote %s bytes" % (label, len(buf))) # FIXME: remove this
         if cnt != len(buf):
             raise weewx.WeeWxIOError('%s: bad write length=%s for command %s' %
                                      (label, cnt, _fmt(buf)))
