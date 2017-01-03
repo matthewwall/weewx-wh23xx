@@ -1,3 +1,7 @@
+0.10 03jan2016
+* renamed light to luminosity for database, not for hardware naming
+* use luminosity to determine radiation until we figure what what uv really is
+
 0.9 31dec2016
 * added logging to diagnose possible infinite loop
 * avoid possible infinite loop

@@ -233,7 +233,7 @@ from weeutil.weeutil import timestamp_to_string, log_traceback
 from weewx.wxformulas import calculate_rain
 
 DRIVER_NAME = 'WH23xx'
-DRIVER_VERSION = '0.9'
+DRIVER_VERSION = '0.10'
 
 def loader(config_dict, _):
     return WH23xxDriver(**config_dict[DRIVER_NAME])
@@ -253,6 +253,9 @@ def loginf(msg):
 
 def logerr(msg):
     logmsg(syslog.LOG_ERR, msg)
+
+
+LUMINOSITY_TO_RADIATION = 0.0079
 
 
 #' '.join(["%0.2X" % ord(c) for c in buf]))
@@ -385,6 +388,8 @@ class WH23xxDriver(weewx.drivers.AbstractDevice):
     def _data_to_packet(self, data):
         # convert from the dictionary-of-dictionaries to a simple dictionary
         # of observation values.
+        # FIXME: get measure of connectivity to sensors
+        # FIXME: get measure of battery life/status
         pkt = {'dateTime': int(time.time() + 0.5), 'usUnits': weewx.METRICWX}
         pkt['windDir'] = data.get('wind_dir', {}).get('value')
         pkt['windSpeed'] = data.get('wind_speed', {}).get('value')
@@ -394,13 +399,15 @@ class WH23xxDriver(weewx.drivers.AbstractDevice):
         pkt['inTemp'] = data.get('in_temp', {}).get('value')
         pkt['outTemp'] = data.get('out_temp', {}).get('value')
         pkt['pressure'] = data.get('abs_baro', {}).get('value')
-        pkt['light'] = data.get('light', {}).get('value')
-        pkt['radiation'] = data.get('uv', {}).get('value')
+        pkt['luminosity'] = data.get('light', {}).get('value')
+        pkt['uv_raw'] = data.get('uv', {}).get('value') # what is this really?
         pkt['UV'] = data.get('uvi', {}).get('value')
         rain_total = data.get('rain_totals', {}).get('value')
         pkt['rain'] = calculate_rain(rain_total, self.last_rain)
         self.last_rain = rain_total
-        # FIXME: get measure of connectivity to sensors
+        # use luminosity as an approximation for radiation.
+        # FIXME: this probably should be done by StdWXCalculate
+        pkt['radiation'] = pkt['luminosity'] * LUMINOSITY_TO_RADIATION
         return pkt
 
 
@@ -711,7 +718,7 @@ class WH23xxStation(object):
         ITEM_RAINYEAR: ['rain_year', 4, lambda x : x / 10.0],
         ITEM_RAINTOTALS: ['rain_totals', 4, lambda x : x / 10.0],
         ITEM_LIGHT: ['light', 4, lambda x : x / 10.0],
-        ITEM_UV: ['uv', 2, lambda x : x / 1000.0],
+        ITEM_UV: ['uv', 2, lambda x : x / 1000.0], # FIXME: is this right?
         ITEM_UVI: ['uvi', 1, lambda x : x],
         }
 
