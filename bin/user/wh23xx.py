@@ -609,7 +609,6 @@ class WH23xxStation(object):
                WH23xxStation.READ_RECORD,
                WH23xxStation.READ_RECORD]
         self._write("read_record", buf)
-        logerr("read_record: write complete") # FIXME: remove this
 
         # now do the actual read.  the station should respond with a single
         # READ_RECORD response spread over (probably) multiple USB packets.
@@ -619,7 +618,6 @@ class WH23xxStation(object):
         # reply data, and a checksum.
         tmp = []
         record_size = 0
-        logerr("read_record: do interrupt read") # FIXME: remove this
         buf = self.devh.interruptRead(
             self.USB_ENDPOINT_IN,
             self.USB_PACKET_SIZE,
