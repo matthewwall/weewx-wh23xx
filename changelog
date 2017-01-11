@@ -1,4 +1,8 @@
-0.10 03jan2016
+0.11 11jan2017
+* do uv-to-uvi conversion for historical records using fine offset function
+* do not divide uv by 1000.0 - leave it in uW/m^2
+
+0.10 03jan2017
 * renamed light to luminosity for database, not for hardware naming
 * use luminosity to determine radiation until we figure what what uv really is
 

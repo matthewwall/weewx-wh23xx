@@ -33,7 +33,8 @@ Sensor specifications:
   wind direction: 0 to 359 degree
   rainfall: 0 to 9999.9 mm
   light: 0 to 300000 lux
-  UVI: 0 to 15 (0 to 20000 W/m^2)
+  UV: 0 to 20000 uW/m^2
+  UVI: 0 to 15
   pressure: 300-1100 hPa
 
 ===============================================================================
@@ -76,7 +77,7 @@ Historical records include the following:
   out temperature
   pressure
   light
-  UV (radiation)
+  uv (radiation)
 
 The station has 3552 records.  Each record is 18 bytes.  The timestamp for each
 record is stored separately from the record.
@@ -112,6 +113,28 @@ Data are stored as hi byte first then lo byte
 For 1 byte word, 0xff indicates invalid
 For 2 byte word, 0xffff indicates invalid
 For 4 byte word, 0xffffffff indicates invalid
+
+The UVI is calculated from UV as follows:
+
+          UV      UVI
+  UV_0  = 0
+  UV_1  = 99      0
+  UV_2  = 540     1
+  UV_3  = 1000    2
+  UV_4  = 1400    3
+  UV_5  = 1843    4
+  UV_6  = 2292    5
+  UV_7  = 2734    6
+  UV_8  = 3138    7
+  UV_9  = 3648    8
+  UV_10 = 4196    9
+  UV_11 = 4707   10
+  UV_12 = 5209   11
+  UV_13 = 5735   12
+  UV_14 = 6276   13
+  UV_15 = 6778   14
+                 15
+  UV_MAX = 20000 0xff
 
 ===============================================================================
 Commands
@@ -233,7 +256,7 @@ from weeutil.weeutil import timestamp_to_string, log_traceback
 from weewx.wxformulas import calculate_rain
 
 DRIVER_NAME = 'WH23xx'
-DRIVER_VERSION = '0.10'
+DRIVER_VERSION = '0.11'
 
 def loader(config_dict, _):
     return WH23xxDriver(**config_dict[DRIVER_NAME])
@@ -291,6 +314,42 @@ def _signed(x):
     if x & 0xf0 == 0xf0:
         v *= -1
     return v
+
+def _uv_to_uvi(x):
+    if x < 99:
+        return 0
+    elif x < 540:
+        return 1
+    elif x < 1000:
+        return 2
+    elif x < 1400:
+        return 3
+    elif x < 1843:
+        return 4
+    elif x < 2292:
+        return 5
+    elif x < 2734:
+        return 6
+    elif x < 3138:
+        return 7
+    elif x < 3648:
+        return 8
+    elif x < 4196:
+        return 9
+    elif x < 4707:
+        return 10
+    elif x < 5209:
+        return 11
+    elif x < 5735:
+        return 12
+    elif x < 6276:
+        return 13
+    elif x < 6778:
+        return 14
+    elif x < 20000:
+        return 15
+    return 0xff
+
 
 KNOWN_USB_MESSAGES = [
     'No data available', 'No error',
@@ -400,7 +459,7 @@ class WH23xxDriver(weewx.drivers.AbstractDevice):
         pkt['outTemp'] = data.get('out_temp', {}).get('value')
         pkt['pressure'] = data.get('abs_baro', {}).get('value')
         pkt['luminosity'] = data.get('light', {}).get('value')
-        pkt['uv_raw'] = data.get('uv', {}).get('value') # what is this really?
+        pkt['uv_raw'] = data.get('uv', {}).get('value')
         pkt['UV'] = data.get('uvi', {}).get('value')
         rain_total = data.get('rain_totals', {}).get('value')
         pkt['rain'] = calculate_rain(rain_total, self.last_rain)
@@ -715,7 +774,7 @@ class WH23xxStation(object):
         ITEM_RAINYEAR: ['rain_year', 4, lambda x : x / 10.0],
         ITEM_RAINTOTALS: ['rain_totals', 4, lambda x : x / 10.0],
         ITEM_LIGHT: ['light', 4, lambda x : x / 10.0],
-        ITEM_UV: ['uv', 2, lambda x : x / 1000.0], # FIXME: is this right?
+        ITEM_UV: ['uv', 2, lambda x : x ],
         ITEM_UVI: ['uvi', 1, lambda x : x],
         }
 
@@ -816,7 +875,8 @@ class WH23xxStation(object):
         x = (raw[15] << 16) + (raw[14] << 8) + raw[13]
         data['light'] = None if x == 0xffffff else x / 10.0 # 0.0-300000.0 lux
         x = (raw[17] << 8) + raw[16]
-        data['uv'] = None if x == 0xffff else x / 1000.0 # 0-20000 W/m^2
+        data['uv'] = None if x == 0xffff else x # 0-20000 uW/m^2
+        data['uvi'] = _uv_to_uvi(data['uv'])
         return data
 
     @staticmethod
