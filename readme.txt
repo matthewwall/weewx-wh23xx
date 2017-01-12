@@ -1,4 +1,6 @@
 weewx-wh23xx
+Copyright 2016 Matthew Wall
+License: GPLv3
 
 This is a weewx driver for Fine Offset WH23xx hardware.  These stations are
 commonly available as Tycon TP2700 weather stations.

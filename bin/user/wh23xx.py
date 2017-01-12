@@ -1,6 +1,6 @@
 #!/usr/bin/env python
-# Copyright 2016 Matthew Wall, all rights reserved
-# Distributed under the terms of the GPLv3
+# Copyright 2016 Matthew Wall
+# Distributed under the terms of the GNU Public License (GPLv3)
 #
 # Thanks to Lloyd Kinsella
 
