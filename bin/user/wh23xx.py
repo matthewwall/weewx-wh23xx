@@ -256,7 +256,7 @@ from weeutil.weeutil import timestamp_to_string, log_traceback
 from weewx.wxformulas import calculate_rain
 
 DRIVER_NAME = 'WH23xx'
-DRIVER_VERSION = '0.11'
+DRIVER_VERSION = '0.12'
 
 def loader(config_dict, _):
     return WH23xxDriver(**config_dict[DRIVER_NAME])
@@ -466,7 +466,7 @@ class WH23xxDriver(weewx.drivers.AbstractDevice):
         self.last_rain = rain_total
         # use luminosity as an approximation for radiation.
         # FIXME: this probably should be done by StdWXCalculate
-        pkt['radiation'] = pkt['luminosity'] * LUMINOSITY_TO_RADIATION
+        pkt['radiation'] = pkt['luminosity'] * LUMINOSITY_TO_RADIATION if pkt['luminosity' is not None else None
         return pkt
 
 
