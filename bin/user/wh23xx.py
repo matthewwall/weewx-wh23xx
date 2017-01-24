@@ -466,7 +466,7 @@ class WH23xxDriver(weewx.drivers.AbstractDevice):
         self.last_rain = rain_total
         # use luminosity as an approximation for radiation.
         # FIXME: this probably should be done by StdWXCalculate
-        pkt['radiation'] = pkt['luminosity'] * LUMINOSITY_TO_RADIATION if pkt['luminosity' is not None else None
+        pkt['radiation'] = pkt['luminosity'] * LUMINOSITY_TO_RADIATION if pkt['luminosity'] is not None else None
         return pkt
 
 
