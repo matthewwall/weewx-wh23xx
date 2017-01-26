@@ -585,8 +585,8 @@ class WH23xxStation(object):
             self.devh.claimInterface(self.iface)
             self.devh.setAltInterface(self.iface)
         except usb.USBError, e:
-            self.close()
             logerr("Unable to claim USB interface %s: %s" % (self.iface, e))
+            self.close()
             raise weewx.WeeWxIOError(e)
 
     def close(self):
