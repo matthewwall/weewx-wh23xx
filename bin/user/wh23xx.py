@@ -256,7 +256,7 @@ from weeutil.weeutil import timestamp_to_string, log_traceback
 from weewx.wxformulas import calculate_rain
 
 DRIVER_NAME = 'WH23xx'
-DRIVER_VERSION = '0.12'
+DRIVER_VERSION = '0.13rc1'
 
 def loader(config_dict, _):
     return WH23xxDriver(**config_dict[DRIVER_NAME])
@@ -400,6 +400,7 @@ class WH23xxDriver(weewx.drivers.AbstractDevice):
         loginf('poll interval is %s' % self._poll_interval)
         self.max_tries = int(stn_dict.get('max_tries', 5))
         self.retry_wait = int(stn_dict.get('retry_wait', 10))
+        self._debug_rain = int(stn_dict.get('debug_rain', 0))
         self.last_rain = None
         self._station = WH23xxStation()
         self._station.open()
@@ -418,9 +419,10 @@ class WH23xxDriver(weewx.drivers.AbstractDevice):
                 try:
                     decoded = WH23xxStation.decode_weather_data(raw)
                     logdbg("decoded data: %s" % decoded)
-                    packet = self._data_to_packet(decoded)
-                    logdbg("packet: %s" % packet)
-                    yield packet
+                    if decoded:
+                        packet = self._data_to_packet(decoded)
+                        logdbg("packet: %s" % packet)
+                        yield packet
                 except IndexError, e:
                     logerr("decode failed: %s (%s)" % (e, _fmt(raw)))
                     log_traceback(loglevel=syslog.LOG_DEBUG)
@@ -439,6 +441,9 @@ class WH23xxDriver(weewx.drivers.AbstractDevice):
                 else:
                     logerr("get_current: failed attempt %d of %d: %s" %
                            (ntries, self.max_tries, e))
+            except weewx.WeeWxIOError, e:
+                logerr("get_current: failed attempt %d of %d: %s" %
+                       (ntries, self.max_tries, e))
             time.sleep(self.retry_wait)
         msg = "read failed: max retries (%d) exceeded" % self.max_tries
         logerr(msg)
@@ -463,6 +468,9 @@ class WH23xxDriver(weewx.drivers.AbstractDevice):
         pkt['UV'] = data.get('uvi', {}).get('value')
         rain_total = data.get('rain_totals', {}).get('value')
         pkt['rain'] = calculate_rain(rain_total, self.last_rain)
+        if self._debug_rain and self.last_rain != rain_total:
+            loginf("rain_delta is %s (rain_total=%s, rain_last=%s)" %
+                   (pkt['rain'], rain_total, self.last_rain))
         self.last_rain = rain_total
         # use luminosity as an approximation for radiation.
         # FIXME: this probably should be done by StdWXCalculate
@@ -705,15 +713,23 @@ class WH23xxStation(object):
             logdbg("read_record: buf: %s" % _fmt(buf))
             tmp.extend(buf[2:]) # skip 0x01 and payload_size
         if cnt >= max_cnt:
-            raise weewx.WeeWxIOError("read_record: suspicious packets")
+            raise weewx.WeeWxIOError("read_record: max_cnt reads exceeded")
         rbuf = tmp[0:record_size] # prune off any dangling bytes
+        chksum_pkt = tmp[record_size]
 
-        # verify the checksum for the record
+        # package up just the bytes we care about
         tmp = [WH23xxStation.READ_RECORD, record_size]
         tmp.extend(rbuf)
+
+        # verify the checksum for the packet
         chksum = _calc_checksum(tmp)
-        logdbg("read_record: rbuf: %s chksum=0x%02x" %
-               (_fmt(rbuf), chksum))
+        logdbg("read_record: rbuf: %s chksum_pkt=%02x chksum=0x%02x" %
+               (_fmt(rbuf), chksum_pkt, chksum))
+        if chksum != chksum_pkt:
+            logerr("read_record: checksum mismatch: 0x%02x != 0x%02x (%s)" %
+                   (chksum_pkt, chksum, _fmt(rbuf)))
+            raise weewx.WeeWxIOError("read_record: checksum mismatch: "
+                                     "%02x != %02x" % (chksum_pkt, chksum))
         return rbuf
 
     def _clear_max_min(self):
@@ -808,9 +824,9 @@ class WH23xxStation(object):
             mapping = WH23xxStation.ITEM_MAPPING.get(item)
             if mapping:
                 if i + mapping[1] - 1 >= len(raw):
-                    raise weewx.WeeWxIOError(
-                        "not enough bytes for %s: idx=%s numbytes=%s bytes=%s"
-                        % (mapping[0], i, mapping[1], raw))
+                    logerr("not enough bytes for %s: idx=%s nbytes=%s bytes=%s"
+                           % (mapping[0], i, mapping[1], raw))
+                    return dict()
                 # bytes are decoded MSB first, then function is applied
                 label = mapping[0]
                 obs['value'] = _decode_bytes(raw, i, mapping[1], mapping[2])
@@ -818,7 +834,7 @@ class WH23xxStation(object):
             else:
                 logerr("no mapping for item id 0x%02x (0x%02x)"
                        " at index %s of %s" % (item, item_raw, i-1, _fmt(raw)))
-                raise weewx.WeeWxIOError("no mapping for id 0x%02x" % item)
+                return dict()
 
             if has_date:
                 # year.month.day

@@ -1,3 +1,7 @@
+0.13 25jan2017
+* improve retry attempts for various failure modes
+* verify that checksums match for read_record, retry if bogus checksums
+
 0.12 23jan2017
 * deal with situation where no light sensor is attached
 
