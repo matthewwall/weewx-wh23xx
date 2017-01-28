@@ -7,9 +7,9 @@ commonly available as Tycon TP2700 weather stations.
 
 Installation
 
-0) install weewx, select 'Simulator' driver (see the weewx user guide)
+0) install weewx, select 'Simulator' driver
 
-dpkg -i weewx_x.y.z-r.deb
+http://weewx.com/docs/usersguide.htm#installing
 
 1) download the driver
 
@@ -17,11 +17,11 @@ wget -O weewx-wh23xx.zip https://github.com/matthewwall/weewx-wh23xx/archive/mas
 
 2) install the driver
 
-wee_extension --install weewx-wh23xx.zip
+sudo wee_extension --install weewx-wh23xx.zip
 
 3) configure the driver
 
-wee_config --reconfigure
+sudo wee_config --reconfigure
 
 4) start weewx
 
