@@ -10,7 +10,7 @@ def loader():
 class WH23xxInstaller(ExtensionInstaller):
     def __init__(self):
         super(WH23xxInstaller, self).__init__(
-            version="0.13",
+            version="0.14",
             name='wh23xx',
             description='Collect data from wh23xx weather stations',
             author="Matthew Wall",

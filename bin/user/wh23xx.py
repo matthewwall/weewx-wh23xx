@@ -256,7 +256,7 @@ from weeutil.weeutil import timestamp_to_string, log_traceback
 from weewx.wxformulas import calculate_rain
 
 DRIVER_NAME = 'WH23xx'
-DRIVER_VERSION = '0.13'
+DRIVER_VERSION = '0.14'
 
 def loader(config_dict, _):
     return WH23xxDriver(**config_dict[DRIVER_NAME])
@@ -408,6 +408,7 @@ class WH23xxDriver(weewx.drivers.AbstractDevice):
     def closePort(self):
         self._station.close()
 
+    @property
     def hardware_name(self):
         return self._model
 
